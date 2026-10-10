@@ -75,12 +75,16 @@ class Links(Analysis):
                 vals.update({"closest_ip": ip, "closest": human_delta(d), "closest_seconds": round(d), "closest_a": aa,
                              "closest_ts_a": ta, "closest_b": ab, "closest_ts_b": tb, "closest_activity_records": act})
             mer = self._mermaid(comp, pairs)
+            ipl = sorted({ip for _, v in pairs for ip in v})
             self.add("account_cluster", f"{len(comp)} accounts linked by shared IPs", stmt,
                      {"values": vals, "mermaid": mer,
+                      "graph": {"accounts": comp[:2000], "ips": ipl[:5000], "ip_classes": classes, "max_accounts_per_ip": maxacc},
                       "tables": [{"title": "Account pairs", "columns": ["account_a", "account_b", "shared_ips", "ips", "closest_co_use", "on_ip", "co_use_records"],
                                   "rows": rows[: self.trows], "total_rows": len(rows)}]},
-                     sql="SELECT a.ip, a.account, b.account FROM ip_accounts a JOIN ip_accounts b ON a.ip=b.ip AND a.account<b.account "
-                         f"WHERE a.account IN ({', '.join(sq(x) for x in comp[:30])})",
+                     sql="SELECT a.ip, a.account AS account_a, b.account AS account_b, a.events AS records_a, b.events AS records_b "
+                         "FROM ip_accounts a JOIN ip_accounts b ON a.ip = b.ip AND a.account < b.account JOIN ip_summary s ON s.ip = a.ip "
+                         f"WHERE s.ip_class IN {classes} AND s.accounts BETWEEN 2 AND {maxacc} "
+                         f"AND a.account IN ({', '.join(sq(x) for x in comp[:200])}) ORDER BY a.ip, a.account, b.account",
                      evidence=ev[: self.nsamp * 2], priority=1, sort_key=f"1{999 - len(comp):03d}{comp[0]}")
 
     @staticmethod

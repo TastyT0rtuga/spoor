@@ -123,7 +123,7 @@ class Report:
     def write_all(self, stage: str = "final") -> list[Path]:
         files = []
         steps = [self.exports, self.charts, self.sources_md, self.findings_md, self.evidence_md, self.timeline_md,
-                 self.methods_md, self.review_md, self.citation_md, self.report_md]
+                 self.figures_md, self.methods_md, self.review_md, self.citation_md, self.report_md]
         if self.prog:
             self.prog.set_total(len(steps), "files")
         for i, fn in enumerate(steps):
@@ -136,6 +136,83 @@ class Report:
                 self.prog.update(i + 1)
         files.append(self.manifest())
         return files
+
+    def write_after_figures(self) -> list[Path]:
+        """After the Figures stage: the files that show or list figures, and the manifest."""
+        files = []
+        for fn in (self.figures_md, self.methods_md, self.review_md, self.citation_md, self.report_md):
+            r = fn()
+            if r:
+                files.append(r)
+        files.append(self.manifest())
+        return files
+
+    # ------------------------------------------------------------------ figures
+    @property
+    def figs(self) -> list[dict]:
+        if not hasattr(self, "_figs"):
+            from .figures import figure_rows
+            self._figs = figure_rows(self.con)
+        return self._figs
+
+    def fig_embed(self, fig: dict) -> list[str]:
+        return [f"![Figure {fig['no']}. {md_escape(fig['title'])}](figures/{fig['file']})", "",
+                f"*Figure {fig['no']}. {md_escape(fig['title'])}.* {md_escape(fig['caption'])} "
+                f"Sources and reproducing queries: [FIGURES.md](FIGURES.md#figure-{fig['no']}).", ""]
+
+    def figures_md(self) -> Path | None:
+        p = self.out / "FIGURES.md"
+        if not self.figs:
+            if p.exists():
+                p.unlink()
+            return None
+        fids = {f["fid"]: f for f in self.findings}
+        L = [f"# Figures — {self.case.name}", "", DRAFT, "",
+             "Drawn by Spoor from the findings and the case database only - no language model is involved. Every mark on a figure "
+             "carries the finding it comes from (hover it in a browser, or use the sources table under the figure). The same "
+             "findings always produce byte-identical files; their SHA-256 hashes are below and in MANIFEST.sha256.", ""]
+        for fig in self.figs:
+            L += [f'<a id="figure-{fig["no"]}"></a>', f"## Figure {fig['no']} — {md_escape(fig['title'])}", ""]
+            if fig["status"] != "ok" or not fig.get("file"):
+                why = fig.get("reason") or "not drawn"
+                L += [("Not drawn: " if fig["status"] == "skipped" else "**Not drawn - the figure failed:** ") + md_escape(why)
+                      + ("" if fig["status"] == "skipped" else " (see logs/run.log and REVIEW.md)") + ".", ""]
+                continue
+            L += self.fig_embed(fig)
+            L += [f"File `figures/{fig['file']}`, SHA-256 `{fig['sha256']}`.", ""]
+            lim = [n for n in fig["notes"] if not n.startswith(("Bars count", "Each line joins"))]
+            if lim:
+                L += ["**What the figure leaves out** (also printed on it):", ""] + [f"- {md_escape(n)}" for n in lim] + [""]
+            rows = []
+            for r in fig["refs"]:
+                f = fids.get(r["fid"])
+                if not f:
+                    rows.append([md_escape(r["marker"]), md_escape(r["fid"]) + " (missing)", md_escape(r["shows"]), "", ""])
+                    continue
+                ev = self.evidence(f["id"])
+                cites = [md_code(f"{e['label']}:{e['loc']}") for e in ev[:6]] + [md_code(c["cite"]) for c in self.other_cites(f["id"])[:3]]
+                more = f" … {len(ev) - 6} more" if len(ev) > 6 else ""
+                evtxt = (", ".join(cites) + more + f" ([all](EVIDENCE.md#{anchor(f['fid'])}))") if cites else "(summary finding - no single record)"
+                rows.append([md_escape(r["marker"]), flink(f["fid"]), md_escape(r["shows"]), evtxt,
+                             md_code(f["sql"], 3000) if f.get("sql") else "(none)"])
+            L += ["**Figure sources**", "", "| Marker | Finding | Shows | Evidence (cited records) | Reproduce (read-only SQL) |"]
+            L.append("| --- | --- | --- | --- | --- |")
+            for r in rows:
+                L.append("| " + " | ".join(r) + " |")
+            L.append("")
+            if fig["data_sql"]:
+                L += ["**Data drawn** - these queries return exactly the values drawn:", ""]
+                for what, sql in fig["data_sql"]:
+                    L += [f"*{md_escape(what)}*", "", "```sql", sql, "```", ""]
+            caps = fig.get("caps") or {}
+            if caps:
+                L += ["Limits used: " + ", ".join(f"{k.replace('_', ' ')} = {v}" for k, v in caps.items())
+                      + " (Settings → Analysis settings).", ""]
+            w = fig.get("warnings") or []
+            L += [("Layout check: passed (grid, safety, every label inside its box, no overlapping text)." if not w else
+                   f"**Layout check: {len(w)} warning(s)** - listed in REVIEW.md."), ""]
+        p.write_text("\n".join(L) + "\n", encoding="utf-8")
+        return p
 
     # ------------------------------------------------------------------ exports
     def _csv(self, name: str, header: list[str], rows) -> Path:
@@ -401,8 +478,28 @@ class Report:
                               [[n["section"], n["text"], "; ".join(json.loads(n["flags"] or "[]"))] for n in flg]))
         else:
             L.append("- None.")
+        L += ["", "## 6. Figures", ""]
+        fmeta = dbm.get_meta(self.con, "figures")
+        if not self.figs:
+            if isinstance(fmeta, dict) and fmeta.get("off"):
+                L.append("- Figures were switched off for this run (Analysis settings: figures, or `--no-figures`).")
+            elif isinstance(fmeta, dict) and fmeta.get("error"):
+                L.append("- [ ] Figures could not be drawn: " + md_escape(fmeta.get("error")) + " (logs/run.log).")
+            else:
+                L.append("- Figures have not been drawn yet (they are drawn right after the first report).")
+        for fig in self.figs:
+            name = f"Figure {fig['no']} ({md_escape(fig['title'])})"
+            if fig["status"] == "ok" and fig.get("file"):
+                L.append(f"- [ ] {name}: compare against [FINDINGS.md](FINDINGS.md) before using it in a briefing - sources in "
+                         f"[FIGURES.md](FIGURES.md#figure-{fig['no']}).")
+                for w in fig.get("warnings") or []:
+                    L.append(f"- [ ] {name} layout warning: {md_escape(w)}")
+            elif fig["status"] == "skipped":
+                L.append(f"- {name} not drawn: {md_escape(fig['reason'])}.")
+            else:
+                L.append(f"- [ ] {name} **failed** and is not in the report: {md_escape(fig['reason'])} (logs/run.log).")
         fails = dbm.rows(self.con, "SELECT * FROM citation_checks WHERE status != 'pass' ORDER BY id")
-        L += ["", "## 6. Citation check problems", ""]
+        L += ["", "## 7. Citation check problems", ""]
         if fails:
             L.append(md_table(["Citation", "Result", "Detail"], [[c["cite"], c["status"], c["detail"]] for c in fails[:500]]))
         else:
@@ -427,12 +524,61 @@ class Report:
             if hashes:
                 L += ["Source hashes re-computed at the same time:", "",
                       md_table(["Result", "Count"], [[k, v] for k, v in hashes.items()]), ""]
+            L += self.figure_check_md(meta)
             fails = dbm.rows(self.con, "SELECT * FROM citation_checks WHERE status != 'pass' ORDER BY id LIMIT 2000")
             if fails:
                 L += ["## Problems", "", md_table(["Citation", "Result", "Detail"], [[c["cite"], c["status"], c["detail"]] for c in fails])]
         p = self.out / "CITATION_CHECK.md"
         p.write_text("\n".join(L) + "\n", encoding="utf-8")
         return p
+
+    def figure_check(self) -> list[dict]:
+        """Per drawn figure: the findings it references and how their cited records fared in the citation check."""
+        out = []
+        for fig in self.figs:
+            if fig["status"] != "ok":
+                continue
+            fids = sorted({r["fid"] for r in fig["refs"]})
+            ids = [f["id"] for f in self.findings if f["fid"] in fids]
+            if not ids:
+                out.append({"fig": fig, "fids": fids, "records": 0, "checked": 0, "passed": 0, "problems": []})
+                continue
+            q = ",".join("?" * len(ids))
+            evs = [r[0] for r in self.con.execute(f"SELECT DISTINCT event_id FROM finding_evidence WHERE finding_id IN ({q})", ids)]
+            st: dict = {}
+            for i in range(0, len(evs), 900):
+                part = evs[i:i + 900]
+                for r in self.con.execute(f"SELECT event_id, status, cite FROM citation_checks WHERE event_id IN ({','.join('?' * len(part))})", part):
+                    st[r[0]] = (r[1], r[2])
+            oc = [r[0] for r in self.con.execute(f"SELECT DISTINCT cite FROM finding_cites WHERE finding_id IN ({q})", ids)]
+            ocs = {r[0]: r[1] for r in self.con.execute("SELECT cite, status FROM citation_checks WHERE event_id IS NULL")}
+            checked = [v for v in st.values()] + [(ocs[c], c) for c in oc if c in ocs]
+            problems = sorted({c for s_, c in checked if s_ != "pass"})
+            out.append({"fig": fig, "fids": fids, "records": len(evs) + len(oc), "checked": len(checked),
+                        "passed": sum(1 for s_, _ in checked if s_ == "pass"), "problems": problems})
+        return out
+
+    def figure_check_md(self, meta: dict) -> list[str]:
+        if not self.figs:
+            return []
+        L = ["## Findings shown in figures", ""]
+        res = self.figure_check()
+        if not res:
+            return L + ["No figure was drawn.", ""]
+        rows = []
+        for r in res:
+            fig = r["fig"]
+            verdict = ("all re-read and matched" if r["checked"] == r["records"] and not r["problems"] else
+                       (f"{len(r['problems'])} problem(s): " + ", ".join(r["problems"][:10]) if r["problems"] else
+                        f"{r['records'] - r['checked']} not checked (citation check mode: {meta.get('mode', '?')})"))
+            rows.append([f"Figure {fig['no']} ({fig['title']})", ", ".join(r["fids"]), f"{fmt_int(r['passed'])} of {fmt_int(r['records'])}", verdict])
+        L.append(md_table(["Figure", "Findings referenced", "Cited records matched", "Result"], rows))
+        L.append("")
+        ok = all(r["checked"] == r["records"] and not r["problems"] for r in res)
+        L.append("Every finding referenced by a figure passed the re-read check: each of its cited records was found again in the "
+                 "original file and matched." if ok else "**Not every finding referenced by a figure passed** - see the table above and Problems below.")
+        L.append("")
+        return L
 
     # ------------------------------------------------------------------ REPORT.md
     def report_md(self) -> Path:
@@ -487,6 +633,10 @@ class Report:
             if not fs:
                 continue
             L += [f"## {cat}", ""]
+            from .figures import SECTION
+            for fig in self.figs:
+                if fig["status"] == "ok" and fig.get("file") and SECTION.get(fig["no"]) == cat:
+                    L += self.fig_embed(fig)
             if cat == "Timing & activity patterns":
                 for ch, alt in (("hourly", "Events by hour of day"), ("weekday", "Events by weekday"), ("daily", "Events over time")):
                     if (self.out / "charts" / f"{ch}.svg").exists():
@@ -506,6 +656,7 @@ class Report:
               "- [EVIDENCE.md](EVIDENCE.md) — the cited records, quoted verbatim",
               "- [SOURCES.md](SOURCES.md) — files, SHA-256 hashes, timezone and mapping decisions",
               "- [TIMELINE.md](TIMELINE.md) — activity in time order (UTC and local)",
+              "- [FIGURES.md](FIGURES.md) — the figures with their sources tables and reproducing queries (`figures/*.svg`)",
               "- [METHODS.md](METHODS.md) — how each analysis works, parameters, data sources, limitations",
               "- [REVIEW.md](REVIEW.md) — checklist of assumptions and anything not analysed",
               "- [CITATION_CHECK.md](CITATION_CHECK.md) — re-verification of every citation against the originals",

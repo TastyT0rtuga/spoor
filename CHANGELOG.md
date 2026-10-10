@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.0 — in development
+
+- **Figures stage** (after Report, before Verify): deterministic SVG figures drawn from the findings,
+  no language model involved; same findings in, byte-identical SVG out.
+  - Figure 1, activity timeline: one lane per account, banded bars per UTC bin (minute to year,
+    whichever fits), local zone as a second scale, long silences cut from the axis, numbered
+    priority-1 event markers with a key.
+  - Figure 2, account–IP link chart: one panel per linked-account group, shared IPs in the middle,
+    lines labelled with record counts, the closest co-use in the accent colour.
+  - Every mark carries its finding (visible text or numbered marker, plus tooltip); FIGURES.md has a
+    sources table per figure (marker → finding → cited records → read-only SQL) and the queries that
+    return exactly what is drawn. REPORT.md embeds the figures; METHODS.md describes them;
+    REVIEW.md has a tick-box per figure; CITATION_CHECK.md confirms the findings shown in figures.
+  - Caps (Analysis settings) are printed on the figure; labels are measured with the bundled fonts and
+    shortened with an ellipsis when needed; an automatic checker enforces the grid, safety and layout.
+  - Dashboard: figures inline in the report viewer; markers open the cited record, lane names the finding.
+  - CLI: `spoor figures "Case"`; `spoor run --no-figures`.
+- New per-account "activity over time" findings (priority 3), so every timeline lane cites a finding.
+- Linked-group findings store their full account and IP lists; their reproduce-SQL applies the same
+  address-class and shared-infrastructure filters as the analysis.
+- Self-test: 4 new checks (figures drawn, layout and safety, reproducible, cited findings re-read).
+
 ## 1.0.0 — first public release
 
 - Readers for CSV/TSV/pipe/semicolon (any encoding, incl. Windows-1251 and UTF-16), Excel

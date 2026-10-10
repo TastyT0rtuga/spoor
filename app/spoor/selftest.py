@@ -3,7 +3,7 @@ folder, with a stand-in model, and checks the results that were planted in the d
 
 Run it after installing on a new machine: `spoor selftest` (or SELFTEST.bat). It proves that
 Python, SQLite, every file reader, the timezone database, the offline ASN data, the analyses,
-the citation check and the sentence verifier all work on this computer."""
+the figures, the citation check and the sentence verifier all work on this computer."""
 from __future__ import annotations
 
 import json
@@ -164,6 +164,25 @@ def selftest(keep: bool = False) -> bool:
             if hashlib.sha256((rep / name).read_bytes()).hexdigest() != h:
                 ok = False
         check(ok, "report manifest hashes verify")
+
+        from .figures import figure_rows
+        from .figures.svg import check_svg
+        from .jobs import draw_figures
+        from .report import Report
+        figs = [f for f in figure_rows(con) if f["status"] == "ok" and f.get("file")]
+        check(len(figs) == 2, f"figures drawn: {', '.join(f['title'] for f in figs) or 'none'}")
+        probs = [p_ for f in figs for p_ in check_svg((rep / "figures" / f["file"]).read_text(encoding="utf-8"))]
+        check(figs and not probs, "figures pass the layout and safety checks (4 px grid, no scripts or links, every label inside its box)"
+              + (f": {probs[:3]}" if probs else ""))
+        before = {f["file"]: f["sha256"] for f in figs}
+        draw_figures(c, con)
+        after = {f["file"]: f["sha256"] for f in figure_rows(con) if f["status"] == "ok"}
+        check(before and before == after, "figures redraw byte-identical from the same findings")
+        fids = {r[0] for r in con.execute("SELECT fid FROM findings WHERE fid IS NOT NULL")}
+        refs = [r["fid"] for f in figure_rows(con) for r in f["refs"]]
+        fc = Report(c, con).figure_check()
+        check(refs and set(refs) <= fids and fc and all(x["checked"] == x["records"] and not x["problems"] for x in fc),
+              f"every finding on a figure exists and its cited records were re-read and matched ({len(set(refs))} findings)")
 
         for bad_sql in ("DELETE FROM events", "SELECT 1; DROP TABLE events", "ATTACH DATABASE 'x.db' AS x",
                         "WITH x AS (SELECT 1) DELETE FROM events", "SELECT load_extension('x')"):

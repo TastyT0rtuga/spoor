@@ -61,8 +61,8 @@ To try it before using real returns: on the home page click **Try it on fictiona
    extracted with 7-Zip and the folder added instead.)
 3. **Run analysis.** Leave *AI-drafted summary* ticked if a local model is installed (section 5).
 4. Watch the trail across the top of the case: Hash → Map → Read → Index → Analyse → Report →
-   Verify → AI draft → Final. The report is written as soon as *Analyse* finishes, before the
-   slow AI stage, so you can start reading while the model works.
+   Figures → Verify → AI draft → Final. The report and its figures are written as soon as *Analyse*
+   finishes, before the slow AI stage, so you can start reading while the model works.
 5. **Check how each file was read** (Sources → click a file). Spoor shows the time zone it used and
    why, the day/month order, the account it attributed rows to, and which column it read as what.
    Change anything that is wrong, press **Preview how it will be read**, then **Save settings** and
@@ -98,7 +98,9 @@ Everything is in `cases\<case>\report\`:
 
 | File | Contents |
 |---|---|
-| `REPORT.md` | Start here. Case summary, the verified AI summary (if any), priority-1 findings, every category with charts. |
+| `REPORT.md` | Start here. Case summary, the verified AI summary (if any), priority-1 findings, every category with its charts and figures. |
+| `FIGURES.md` | Each figure with its caption, what it leaves out, and a **sources table**: marker → finding → cited records → the read-only SQL behind it, plus the query that returns exactly what is drawn. |
+| `figures\FIG01-timeline.svg`, `figures\FIG02-links.svg` | The figures (section 6). Self-contained SVG: fonts embedded, no scripts, no links; open in any browser or Markdown viewer, or print. |
 | `FINDINGS.md` | Every finding (F001…): statement, tables, evidence citations and the read-only SQL that reproduces it. |
 | `EVIDENCE.md` | The records behind each finding, quoted verbatim from the original files. |
 | `SOURCES.md` | Every file: path, size, SHA-256, format, encoding, time zone and its basis, column mapping, parse statistics. |
@@ -167,6 +169,30 @@ returns. Set **CPU threads** to 8 (the P-cores).
 Thresholds (burst size, gap length, windows…) are under **Settings → Analysis settings** and are
 recorded in each case's `METHODS.md`.
 
+### Figures
+
+Spoor draws two figures for every report, itself, from the findings - no language model is involved, and
+the same findings always give byte-identical files. Every mark carries the finding it comes from
+(F001…, as visible text or a numbered marker and as a tooltip); `FIGURES.md` lists each figure's sources.
+
+| Figure | What it shows |
+|---|---|
+| 1. Activity timeline | One lane per account: activity records (the TIMELINE data) per UTC hour, day, week or month - whichever fits - with your local zone as a second scale. Long silences are cut from the axis and labelled with their length. Numbered markers in the accent colour are priority-1 events (failed-login bursts, account changes from a new IP, rapid network switches, the closest co-use of linked accounts) at their first cited record; a key lists them. |
+| 2. Account–IP link chart | One panel per group of accounts linked by shared IPs: the shared IPs in the middle, the accounts either side, each line labelled with that account's number of records on that IP. The closest co-use the finding reports is the only thing in the accent colour. |
+
+![Activity timeline drawn from the fictional demo returns](docs/FIG01-timeline.svg)
+
+![Account–IP link chart drawn from the fictional demo returns](docs/FIG02-links.svg)
+
+Limits (accounts, markers, linked groups and IPs per figure) are under **Analysis settings**; any limit
+that applies is printed on the figure with a pointer to the CSV holding the rest. Labels too long for
+their box are shortened with "…" on the figure and given in full in the tooltip and the sources table.
+Every time a figure is drawn it is checked automatically: 4 px grid, hairlines, one accent colour,
+no scripts or links, every label inside its box, no overlapping text. In the dashboard, click a
+marker or a line label to open the cited record, or a lane name to open its finding. A figure that
+fails is listed in `REVIEW.md` and does not stop the run; `REVIEW.md` also has a tick-box per figure
+to compare it against `FINDINGS.md` before it goes into a briefing.
+
 **Look up** (no AI) shows everything about an IP or CIDR range, an account, an identifier, any text,
 or a time window, with citations, and saves it as Markdown.
 
@@ -204,12 +230,13 @@ IP line. Such records cite every line used and are flagged `paired_by_proximity`
 ```
 spoor-cli new "Case name" --examiner "SA ..." --tz America/New_York
 spoor-cli add "Case name" D:\Returns\Google
-spoor-cli run "Case name"            (background; add --no-llm, --wait, --accounts N)
+spoor-cli run "Case name"            (background; add --no-llm, --no-figures, --wait, --accounts N)
 spoor-cli status "Case name" --watch
 spoor-cli cancel "Case name"
 spoor-cli lookup "Case name" --ip 198.51.100.0/24 --from 2024-04-01 --to 2024-04-30
 spoor-cli ask "Case name" "Which IPs logged in to x@example.com in April 2024?"
 spoor-cli report "Case name"         (rewrite the Markdown from current results)
+spoor-cli figures "Case name"        (redraw the figures from current results, then rewrite the Markdown)
 spoor-cli selftest
 ```
 
@@ -229,6 +256,8 @@ the 400,000-row test), which leaves room for the model on a 16 GB machine.
   and the ASN/country data are all in this folder.
 - The dashboard listens on 127.0.0.1 only and requires a per-launch token (the link Spoor opens),
   checks the Host header and refuses cross-site requests.
+- Figures are self-contained SVG files: their fonts are embedded and they contain no scripts and no
+  links. The dashboard shows them inline only after stripping anything active, as a second guard.
 - Source files are opened read-only and never modified; each is hashed before reading and re-hashed
   after the analysis (`CITATION_CHECK.md`, `SOURCES.md`). Every action (files added, mappings changed,
   jobs, AI calls) is logged in `logs\audit.log` and the case database, including the full prompts and
@@ -260,10 +289,12 @@ Spoor\
   geoip\            offline ASN and country data (DB-IP Lite, CC BY 4.0)
   watchlists\       optional lists checked in every case
   demo\returns\     fictional returns used by the self-test and the demo case
+  docs\             the example figures shown in this README (drawn from the demo returns)
   cases\            your cases (created on first use)
   tests\            developer tests (python tests\run_tests.py)
   LICENSES\         third-party licenses
-  build\            (repository only) fetch_deps.py, package.py, requirements-vendor.txt
+  build\            (repository only) fetch_deps.py, package.py, make_docs_figures.py,
+                    make_fontmetrics.py, requirements-vendor.txt
 ```
 
 In the repository, `runtime\`, `vendor\`, the `geoip\*.mmdb` files and `PROGRAM.sha256` are not
@@ -282,8 +313,9 @@ python build/package.py         # PROGRAM.sha256 + dist/Spoor-<version>.zip + di
 `fetch_deps.py --no-geoip` skips the network data (then follow `geoip/README.txt`). The build is
 reproducible: the runtime, vendored libraries and DB-IP files it fetches are byte-identical to the
 ones in the 1.0.0 release, and CI builds the package on every push. Tests: `python tests/run_tests.py`
-(units, the 51-check self-test, dashboard/API and security checks; no Windows needed).
+(units, figures - determinism, resume, coverage, layout and stress cases - the self-test, dashboard/API
+and security checks; no Windows needed). `python build/make_docs_figures.py` redraws the README figures.
 
-Spoor 1.0.0. Third-party components and their licenses: `LICENSES/THIRD-PARTY.txt`. Spoor itself is
+Spoor 1.1.0 in development (current release 1.0.0). Third-party components and their licenses: `LICENSES/THIRD-PARTY.txt`. Spoor itself is
 Apache-2.0 (`LICENSE`). A companion tool for server images, [Gumshoe](https://github.com/TastyT0rtuga/gumshoe),
 shares the same local-model setup.

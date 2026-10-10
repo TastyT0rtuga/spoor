@@ -21,6 +21,10 @@ def _case(name):
         raise SystemExit(f"No case '{name}'. Cases: {', '.join(c['slug'] for c in list_cases()) or 'none'}")
 
 
+def dbm_findings(con) -> int:
+    return con.execute("SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL").fetchone()[0]
+
+
 def _utf8_streams() -> None:
     """Console and redirected logs in UTF-8, so Cyrillic or other non-Latin text never breaks output."""
     for st in (sys.stdout, sys.stderr):
@@ -50,6 +54,7 @@ def main(argv=None):
     s = sub.add_parser("run", help="run (or resume) the full analysis in the background")
     s.add_argument("case")
     s.add_argument("--no-llm", action="store_true", help="skip the AI-drafted summary")
+    s.add_argument("--no-figures", action="store_true", help="skip the figures")
     s.add_argument("--accounts", type=int, default=None, help="AI profiles for the N busiest accounts")
     s.add_argument("--wait", action="store_true", help="run in this window instead of in the background")
     s = sub.add_parser("status", help="show progress")
@@ -58,6 +63,8 @@ def main(argv=None):
     s = sub.add_parser("cancel", help="stop the running job (it can be resumed)")
     s.add_argument("case")
     s = sub.add_parser("report", help="rewrite the Markdown report from the current results")
+    s.add_argument("case")
+    s = sub.add_parser("figures", help="redraw the figures from the current results (and rewrite the report)")
     s.add_argument("case")
     s = sub.add_parser("ask", help="ask a question (local model writes read-only SQL)")
     s.add_argument("case")
@@ -110,6 +117,8 @@ def main(argv=None):
         c = _case(a.case)
         con = c.db()
         params = {"llm": not a.no_llm}
+        if a.no_figures:
+            params["figures"] = False
         if a.accounts is not None:
             params["accounts"] = a.accounts
         jid = start_job(c, con, "run", params, wait=a.wait)
@@ -145,6 +154,20 @@ def main(argv=None):
         c = _case(a.case)
         files = write_reports(c, c.db())
         print(f"wrote {len(files)} files to {c.report_dir}")
+    elif cmd == "figures":
+        from .jobs import active_job, draw_figures
+        from .report import write_reports
+        from .util import get_logger
+        c = _case(a.case)
+        con = c.db()
+        if active_job(con, "run"):
+            raise SystemExit("An analysis is running for this case; it draws the figures itself.")
+        if not dbm_findings(con):
+            raise SystemExit("No findings yet - run the analysis first.")
+        r = draw_figures(c, con, None, get_logger(c.dir))
+        write_reports(c, con)
+        c.audit(con, "figures_redrawn", r)
+        print(f"figures: {r}; written to {c.report_dir / 'figures'} and {c.report_dir / 'FIGURES.md'}")
     elif cmd == "ask":
         from .jobs import start_job
         from .util import utc_now_str

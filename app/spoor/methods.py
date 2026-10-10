@@ -48,9 +48,11 @@ def methods_text(case, con) -> str:
           "4. **Analyse.** Deterministic SQL and Python analyses produce findings. Each finding stores the values it states, the "
           "records it rests on, and a reproducing query. Finding numbers are assigned in a fixed order.",
           "5. **Report.** Markdown files and CSV exports are written; a SHA-256 manifest covers the report folder.",
-          "6. **Citation check.** Cited records are located again in the original files and compared with the stored text; "
+          "6. **Figures.** Deterministic SVG figures are drawn from the findings (see Figures below); a figure that fails is "
+          "listed in REVIEW.md and does not stop the run.",
+          "7. **Citation check.** Cited records are located again in the original files and compared with the stored text; "
           "source hashes are recomputed.",
-          "7. **Optional AI draft.** A local language model may draft summary sentences from the findings. Every sentence is "
+          "8. **Optional AI draft.** A local language model may draft summary sentences from the findings. Every sentence is "
           "verified mechanically (below); failures are removed and listed in REVIEW.md.", ""]
     L += ["## Reading files", "", _t(["Format", "How it is read", "Citation form"], [
         ["CSV / TSV / pipe / semicolon", "delimiter and header detected from the first 400 lines; preamble lines kept for context; lines "
@@ -144,6 +146,7 @@ def methods_text(case, con) -> str:
         ["Watchlists", "matches against analyst-supplied lists of IPs, ranges and identifiers", ", ".join(wl) or "none supplied"]]), ""]
     if wl:
         L += ["Watchlists used:", "", _t(["File", "Entries", "SHA-256"], [[k, str(v[1]), v[0]] for k, v in wl.items()]), ""]
+    L += figures_section(con, p)
     L += ["## Language model (optional)", ""]
     if llm_used:
         L += ["Calls made in this case:", "",
@@ -173,3 +176,43 @@ def methods_text(case, con) -> str:
           "- Records repeated across overlapping returns are counted once per source (see the duplicate-events finding).",
           "- Very long records are truncated in the report (full text remains in the source file at the cited location).", ""]
     return "\n".join(L) + "\n"
+
+
+def figures_section(con, p: dict) -> list[str]:
+    from .figures import figure_rows
+    figs = figure_rows(con)
+    L = ["## Figures", "",
+         "Figures are drawn by Spoor itself from the findings and the case database - no language model is involved, and the same "
+         "findings always give byte-identical SVG files. Each file embeds the fonts it uses (Atkinson Hyperlegible Next and Mono, "
+         "SIL Open Font License) and contains no scripts and no external references. Every mark carries the finding it comes from, "
+         "as visible text or a numbered marker and as an SVG tooltip; FIGURES.md lists each figure's sources, the records they cite "
+         "and the queries that reproduce what is drawn. Labels too long for their box are shortened with an ellipsis on the figure "
+         "and given in full in the tooltip and the sources table. Any limit that applies is printed on the figure. Layout rules: a 4 px "
+         "grid, 1 px lines, one accent colour (priority 1 only), meaning never carried by colour alone; they are checked automatically "
+         "every time a figure is drawn. The conventions are adapted from diagram-design by Cathryn Lavery (MIT licence).", "",
+         _t(["Figure", "How it is drawn", "Limits (Analysis settings)"], [
+             ["1. Activity timeline", "One lane per account (accounts named in priority-1 findings first, then the busiest; drawn in order of "
+              "first activity). Bars count activity records - the TIMELINE data - per UTC bin, using the finest of minute, 5 or 15 minutes, "
+              "hour, 3 or 6 hours, day, week (Monday start), month, quarter or year that fits the width; date-only records sit on their "
+              "calendar date and are left out at finer than daily bins. Bar height is banded on a logarithmic scale; the bands are printed "
+              "on the figure. UTC is on top and the case's local zone underneath. A silence longer than a quarter of the drawn time (and at "
+              "least a week) is cut from the axis and labelled with its length in days (at most four axis pieces). Priority-1 findings "
+              "whose cited records fall within 24 hours are marked at their earliest cited record and numbered in time order; for a "
+              "linked-account group the closest co-use is marked. Other priority-1 findings are listed on the figure as not tied to one moment.",
+              f"lanes {p.get('figure_timeline_max_accounts', 12)}, markers {p.get('figure_timeline_max_markers', 12)}"],
+             ["2. Account-IP link chart", "One panel per linked-group finding (largest first). Shared IPs in the middle, accounts either "
+              "side - for up to 10 accounts every split between the sides is tried and the one with the fewest crossing lines kept. Each "
+              "line joins an account to an IP it used and is labelled with that account's number of records on that IP. The closest co-use "
+              "the finding reports is the only element in the accent colour.",
+              f"panels {p.get('figure_links_max_clusters', 3)}, accounts per panel {p.get('figure_links_max_accounts', 12)}, "
+              f"IPs per panel {p.get('figure_links_max_ips', 16)}"]]), ""]
+    if figs:
+        rows = []
+        for f in figs:
+            state = {"ok": "drawn", "skipped": "not drawn"}.get(f["status"], "FAILED")
+            extra = "; ".join(n for n in f["notes"] if not n.startswith(("Bars count", "Each line joins"))) or "-"
+            rows.append([f"{f['no']}. {f['title']}", state + (f" ({f['reason']})" if f.get("reason") else ""), extra])
+        L += ["In this report:", "", _t(["Figure", "Status", "Not shown / limits applied"], rows), ""]
+    elif not p.get("figures", True) or (dbm.get_meta(con, "figures") or {}).get("off"):
+        L += ["Figures were switched off for this run.", ""]
+    return L

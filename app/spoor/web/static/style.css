@@ -212,3 +212,9 @@ pre.sql, pre.raw { background: var(--paper); border: 1px solid var(--rule); bord
   .trail .st span { display: none; }
   .report { padding: 16px; }
 }
+
+/* figures (inline SVG in the report viewer) */
+.report svg.figure { display: block; max-width: 100%; height: auto; margin: 1em 0 .4em; border: 1px solid var(--rule-soft); border-radius: 6px; background: #fff; }
+.report svg.figure [data-cite], .report svg.figure [data-finding] { cursor: pointer; }
+.report svg.figure .marker:hover rect, .report svg.figure .cite:hover rect { stroke: var(--ink); }
+.report svg.figure:focus { outline: 2px solid var(--link); outline-offset: 2px; }

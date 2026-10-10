@@ -27,6 +27,7 @@ RUN_STAGES = [
     ("index", "Index, enrich and summarise"),
     ("analyze", "Run analyses"),
     ("report1", "Write report (deterministic findings)"),
+    ("figures", "Draw figures (deterministic SVG)"),
     ("verify", "Re-check citations and source hashes"),
     ("narrative", "AI-drafted summary (local model, verified)"),
     ("report2", "Write final report"),
@@ -59,7 +60,11 @@ class Progress:
 
     # stage control
     def stage(self, key: str) -> None:
-        idx = [k for k, _ in self.stages].index(key)
+        keys = [k for k, _ in self.stages]
+        if key not in keys:          # a job created by an older version lacks a newer stage
+            self.stages = list(self.stages) + [(key, key)]
+            keys.append(key)
+        idx = keys.index(key)
         self.stage_no = idx + 1
         self.done, self.total, self.unit, self.rate = 0.0, 0.0, "", None
         self._samples = []
@@ -367,6 +372,8 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
         con.commit()
         prog.update(i + 1)
     n = number_findings(con)
+    from .figures import invalidate as invalidate_figures
+    invalidate_figures(case, con)     # figures are redrawn from the new findings in the Figures stage
     fp = findings_fingerprint(con)
     old_fp = dbm.get_meta(con, "findings_fingerprint")
     if old_fp != fp:
@@ -381,6 +388,18 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     prog.stage("report1")
     write_reports(case, con, prog)
     mark("report1")
+
+    prog.stage("figures")
+    figs = None
+    if params.get("figures", p.get("figures", True)):
+        figs = draw_figures(case, con, prog, log)
+    else:
+        from .figures import invalidate as invalidate_figures
+        invalidate_figures(case, con)
+        dbm.set_meta(con, "figures", {"off": True})
+        con.commit()
+        prog.message("Figures not requested")
+    mark("figures")
 
     prog.stage("verify")
     mode = params.get("citation_check") or p.get("citation_check", "all")
@@ -412,7 +431,25 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     prog.stage("report2")
     write_reports(case, con, prog)
     mark("report2")
-    return {"findings": n, "ingest": stats, "citation_check": cc, "narrative": nar, "stage_seconds": timings}
+    return {"findings": n, "ingest": stats, "citation_check": cc, "figures": figs, "narrative": nar, "stage_seconds": timings}
+
+
+def draw_figures(case, con, prog=None, log=None) -> dict:
+    """Draw every figure, then rewrite the report files that show or list them. Never raises for a figure."""
+    from .figures import run_figures
+    from .report import Report
+    try:
+        figs = run_figures(case, con, prog, log)
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ == "Cancelled":
+            raise
+        if log:
+            log.exception("figures")
+        figs = {"error": f"{type(e).__name__}: {e}"}
+        dbm.set_meta(con, "figures", figs)
+        con.commit()
+    Report(case, con, prog).write_after_figures()
+    return figs
 
 
 def _validate_sql(con, log) -> None:

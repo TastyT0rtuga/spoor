@@ -7,6 +7,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -87,6 +88,150 @@ def unit_markdown():
     ok('data-cite="S03:L12"' in h, "citations become clickable in the viewer")
 
 
+def _figure_case(root: Path, name: str, folder: Path, tz: str = "America/New_York", params=None, interrupt=None):
+    """Create a case in its own folder and run it (optionally interrupted once, then resumed)."""
+    root.mkdir(parents=True, exist_ok=True)
+    os.environ["SPOOR_CASES"] = str(root / "cases")
+    os.environ["SPOOR_SETTINGS"] = str(root / "settings.json")
+    (root / "settings.json").write_text(json.dumps({"llm": {"enabled": False, "url": "http://127.0.0.1:9"}}))
+    from spoor.case import create_case, register_path
+    from spoor.jobs import start_job
+    c = create_case(name, "t", "", tz)
+    con = c.db()
+    register_path(c, con, str(folder))
+    restore = None
+    if interrupt:
+        restore = interrupt()
+    start_job(c, con, "run", dict({"llm": False}, **(params or {})), wait=True)
+    if restore:
+        restore()
+        st = con.execute("SELECT status FROM jobs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        ok(st == "cancelled", f"{name}: run interrupted as planned ({st})")
+        start_job(c, con, "run", dict({"llm": False}, **(params or {})), wait=True)
+    st = con.execute("SELECT status FROM jobs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    ok(st == "done", f"{name}: run finished ({st})")
+    return c, c.db()
+
+
+def _cancel_once(module, attr):
+    """Make module.attr raise Cancelled the first time it is called (a crash or cancel at that point)."""
+    import importlib
+    mod = importlib.import_module(module)
+    orig = getattr(mod, attr)
+    state = {"done": False}
+    from spoor.jobs import Cancelled
+
+    def wrapper(*a, **k):
+        if not state["done"]:
+            state["done"] = True
+            raise Cancelled()
+        return orig(*a, **k)
+
+    def install():
+        setattr(mod, attr, wrapper)
+        return lambda: setattr(mod, attr, orig)
+    return install
+
+
+def figures_tests():
+    import hashlib
+    from spoor.figures import figure_rows
+    from spoor.figures.svg import check_svg, svg_texts
+    from spoor.jobs import draw_figures
+    from spoor.selftest import demo_returns_dir
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-fig-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        def hashes(c):
+            return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((c.report_dir / "figures").glob("*.svg"))}
+
+        a, con = _figure_case(tmp / "a", "Figure test", demo_returns_dir())
+        figs = figure_rows(con)
+        ha = hashes(a)
+        ok([f["status"] for f in figs] == ["ok", "ok"] and len(ha) == 2, f"demo: both figures drawn ({sorted(ha)})")
+        for name in sorted(ha):
+            svg = (a.report_dir / "figures" / name).read_text(encoding="utf-8")
+            probs = check_svg(svg)
+            ok(not probs, f"{name}: grid, safety and layout checks pass" + (f" - {probs[:3]}" if probs else ""))
+            ok("@font-face" in svg and "font/woff2;base64," in svg, f"{name}: fonts embedded, nothing loaded from outside")
+        # determinism and resume
+        draw_figures(a, con)
+        ok(hashes(a) == ha, "redrawing from the same findings gives byte-identical SVG")
+        b, _ = _figure_case(tmp / "b", "Figure test", demo_returns_dir(), interrupt=_cancel_once("spoor.figures.timeline", "build"))
+        ok(hashes(b) == ha, "a run interrupted while drawing figures, then resumed, gives identical figures")
+        c3, _ = _figure_case(tmp / "c", "Figure test", demo_returns_dir(), interrupt=_cancel_once("spoor.derive", "build_indexes"))
+        ok(hashes(c3) == ha, "a run interrupted after reading the files, then resumed, gives identical figures")
+        # coverage: every finding on a figure exists; every figure has a sources table
+        fids = {r[0] for r in con.execute("SELECT fid FROM findings WHERE fid IS NOT NULL")}
+        refs = [r for f in figs for r in f["refs"]]
+        ok(refs and all(r["fid"] in fids for r in refs), f"every finding ID on a figure exists in FINDINGS ({len(refs)} references)")
+        texts = " ".join(t for name in ha for t in svg_texts((a.report_dir / "figures" / name).read_text(encoding="utf-8")))
+        shown = set(re.findall(r"\bF\d{3,}\b", texts))
+        ok(shown and shown <= fids, f"every finding ID printed on a figure exists ({len(shown)} shown)")
+        fm = (a.report_dir / "FIGURES.md").read_text(encoding="utf-8")
+        ok(fm.count("**Figure sources**") == 2 and "## Figure 1" in fm and "## Figure 2" in fm, "FIGURES.md has a sources table per figure")
+        rep = (a.report_dir / "REPORT.md").read_text(encoding="utf-8")
+        ok("figures/FIG01-timeline.svg" in rep and "figures/FIG02-links.svg" in rep, "REPORT.md embeds both figures")
+        man = (a.report_dir / "MANIFEST.sha256").read_text(encoding="utf-8")
+        ok(all(ha[n] + "  figures/" + n in man for n in ha), "MANIFEST.sha256 covers the figures")
+        ok("Every finding referenced by a figure passed the re-read check" in (a.report_dir / "CITATION_CHECK.md").read_text(encoding="utf-8"),
+           "CITATION_CHECK.md confirms the findings shown in figures")
+        rv = (a.report_dir / "REVIEW.md").read_text(encoding="utf-8")
+        ok("- [ ] Figure 1 (" in rv and "- [ ] Figure 2 (" in rv, "REVIEW.md has a tick-box per figure")
+        ok("## Figures" in (a.report_dir / "METHODS.md").read_text(encoding="utf-8"), "METHODS.md describes the figures")
+        # the queries in FIGURES.md return exactly what is drawn
+        tl = figs[0]
+        got: dict = {}
+        for acc, b_, n in con.execute(tl["data_sql"][0][1]):
+            got.setdefault("(no account)" if acc is None else acc, {})[b_] = n
+        ok(got == tl["meta"]["bins"], "timeline: the data query returns exactly the bars drawn")
+        lk = figs[1]
+        for (what, sql), pnl in zip(lk["data_sql"], lk["meta"]["panels"]):
+            rows = sorted([r[0], r[1], r[2]] for r in con.execute(sql))
+            ok(rows == pnl["edges"], f"link chart {what}: the data query returns exactly the lines drawn")
+        # the checker catches what it should
+        good = (a.report_dir / "figures" / "FIG02-links.svg").read_text(encoding="utf-8")
+        for bad, what in ((good.replace("</svg>", "<script>alert(1)</script></svg>"), "a script"),
+                          (good.replace("<rect ", '<rect onclick="x()" ', 1), "an event handler"),
+                          (good.replace("</svg>", '<a href="http://example.com"><text x="0" y="0">x</text></a></svg>'), "an external link"),
+                          (re.sub(r'<rect x="(\d+)"', lambda m: f'<rect x="{int(m.group(1)) + 2}"', good, count=3), "off-grid coordinates"),
+                          (good.replace("</svg>", '<text x="24" y="36" font-family="' + "'Atkinson Next', 'Segoe UI', 'DejaVu Sans', Arial, sans-serif"
+                                        + '" font-size="20" font-weight="700" fill="#000">Overlapping title</text></svg>'), "overlapping text")):
+            ok(check_svg(bad), f"layout checker flags {what}")
+        # stress: long and Cyrillic names, 260 shared IPs, many bursts, a long silence; and a one-day return
+        sys.path.insert(0, str(ROOT / "tests"))
+        import make_stress_data
+        make_stress_data.main(str(tmp / "stress"))
+        s1, con1 = _figure_case(tmp / "s1", "Stress", tmp / "stress" / "long")
+        s2, con2 = _figure_case(tmp / "s2", "One day", tmp / "stress" / "short", tz="Europe/Moscow")
+        for cc, cn, label in ((s1, con1, "stress"), (s2, con2, "one-day")):
+            fr = figure_rows(cn)
+            ok([f["status"] for f in fr] == ["ok", "ok"], f"{label}: both figures drawn")
+            for f in fr:
+                svg = (cc.report_dir / "figures" / f["file"]).read_text(encoding="utf-8")
+                probs = check_svg(svg)
+                ok(not probs, f"{label} {f['file']}: no text outside its box or the canvas, no overlaps" + (f" - {probs[:3]}" if probs else ""))
+        fr1 = figure_rows(con1)
+        ok(any(n.startswith("Showing 12 of 30 accounts") for n in fr1[0]["notes"]), "stress: the timeline prints its account cap")
+        ok(any("showing 12 of 30 accounts and 16 of" in n for n in fr1[1]["notes"]), "stress: the link chart prints its caps")
+        txt = " ".join(svg_texts((s1.report_dir / "figures" / fr1[0]["file"]).read_text(encoding="utf-8")))
+        ok("Showing 12 of 30 accounts" in txt and "\u2026" in txt, "stress: caps and shortened labels are printed on the figure")
+        ok(len(fr1[0]["meta"]["segments"]) == 2, "stress: the six-month silence is cut from the axis")
+        u = figure_rows(con2)[0]["meta"]["unit"]
+        ok(u in ("minute", "5 minutes", "15 minutes", "hour", "3 hours", "6 hours"), f"one-day: bins finer than a day ({u})")
+        # switched off
+        d, cond = _figure_case(tmp / "d", "No figures", demo_returns_dir(), params={"figures": False})
+        ok(not (d.report_dir / "figures").exists() or not list((d.report_dir / "figures").glob("*.svg")), "--no-figures: no figures drawn")
+        ok("switched off" in (d.report_dir / "REVIEW.md").read_text(encoding="utf-8"), "--no-figures: REVIEW.md says so")
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def web_smoke():
     tmp = Path(tempfile.mkdtemp(prefix="spoor-web-"))
     os.environ["SPOOR_CASES"] = str(tmp / "cases")
@@ -144,6 +289,8 @@ def main():
                      ("markdown", unit_markdown)):
         print(f"\n[{name}]")
         fn()
+    print("\n[figures]")
+    figures_tests()
     print("\n[self-test]")
     from spoor.selftest import selftest
     ok(selftest(), "built-in self-test")
