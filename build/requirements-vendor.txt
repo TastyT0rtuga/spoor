@@ -1,0 +1,15 @@
+# Libraries bundled into vendor/ for the Windows package (pure Python except maxminddb, whose
+# win_amd64 wheel also carries the pure-Python reader). pip verifies every wheel against these hashes.
+# Resolved for: --platform win_amd64 --python-version 3.13 --implementation cp --abi cp313
+openpyxl==3.1.5 \
+    --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2
+et_xmlfile==2.0.0 \
+    --hash=sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa
+xlrd==2.0.2 \
+    --hash=sha256:ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9
+pypdf==6.20.0 \
+    --hash=sha256:f003fc2014814d264fe7dd3f9d435c158e23e1a85a2233f87a0a2d6d21c914ad
+tzdata==2026.5 \
+    --hash=sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac
+maxminddb==3.2.0 \
+    --hash=sha256:2a0a39d76bb80081ccc0aeb17728fd3c3890b7e21e085edf0ea4984d01b523ab

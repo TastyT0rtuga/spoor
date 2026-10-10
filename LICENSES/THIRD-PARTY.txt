@@ -1,0 +1,15 @@
+Spoor bundles the following third-party components. Their license texts are in this folder.
+
+Component                         Version   License                 Used for
+Python (Windows embeddable)       3.13.16   PSF License             runtime\python - runs Spoor on Windows without installing anything
+openpyxl                          3.1.5     MIT                     reading .xlsx / .xlsm
+et_xmlfile                        2.0.0     MIT                     dependency of openpyxl
+xlrd                              2.0.2     BSD                     reading legacy .xls
+pypdf                             6.20.0    BSD-3-Clause            extracting text from PDFs
+tzdata                            2026.5    Apache-2.0              IANA time-zone database (Windows has none built in)
+maxminddb                         3.2.0     Apache-2.0              reading the offline .mmdb network databases
+DB-IP IP to ASN / Country Lite    2026-10   CC BY 4.0               offline ASN and country lookups (geoip\README.txt)
+Atkinson Hyperlegible Next/Mono   5.3.0     SIL Open Font License   dashboard typefaces (bundled; no web fonts are fetched)
+
+Python 3.13.16 embeddable package: python-3.13.16-embed-amd64.zip from python.org,
+SHA-256 97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297 (matches the value published on python.org).

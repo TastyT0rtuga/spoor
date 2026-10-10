@@ -1,0 +1,7 @@
+Date;Description;Amount;Currency;Counterparty
+02/01/2024;Payroll deposit;3.250,00;EUR;ACME GmbH
+25/03/2024;Zelle to José Müller (703) 555-0142;-450,00;EUR;José Müller
+14/04/2024;Wire to Example OTC Desk memo bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq;-38.000,00;EUR;Example OTC Desk
+05/04/2024;Card purchase;-12,40;EUR;Coffee Shop
+18/04/2024;Wire to Example OTC Desk;-15.500,00;EUR;Example OTC Desk
+30/04/2024;Transfer from Ally Example;1.200,00;EUR;Ally Example

@@ -1,0 +1,257 @@
+{
+  "subscriber": {
+    "username": "jdoe_snaps",
+    "email": "jdoe.trader@example.com",
+    "phone": "+17035550142",
+    "created": "2020-02-02T10:00:00Z",
+    "note": "FICTIONAL DEMO DATA"
+  },
+  "login_history": [
+    {
+      "timestamp": 1711941480000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1711974900000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1711981740000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712015460000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712036880000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712069580000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712098680000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712113260000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712150700000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712172120000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712200980000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712216100000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712248020000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712263920000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712294280000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712312220000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712353500000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712364960000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712403240000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712418000000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712449140000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712460960000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712487420000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712516340000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712538360000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712578740000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712598840000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712629200000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712646480000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712668080000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712698860000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712715720000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712743080000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712775780000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712796660000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712820240000,
+      "ip": "203.0.113.5",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712844840000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712867460000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712888940000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1712922780000,
+      "ip": "100.70.12.34",
+      "event": "login_success",
+      "device": "iPhone 14"
+    },
+    {
+      "timestamp": 1713087600000,
+      "ip": "159.89.214.31",
+      "event": "login_success",
+      "device": "Linux desktop"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# For running Spoor from a git checkout with a system Python (Linux/WSL/macOS, or Windows with Python installed):
+#   pip install -r requirements.txt && ./spoor.sh selftest
+# The Windows package instead carries these in vendor/ (see build/fetch_deps.py).
+openpyxl==3.1.5
+et_xmlfile==2.0.0
+xlrd==2.0.2
+pypdf==6.20.0
+tzdata==2026.5
+maxminddb==3.2.0
