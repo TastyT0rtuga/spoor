@@ -170,6 +170,11 @@ CREATE TABLE IF NOT EXISTS citation_checks (
   id INTEGER PRIMARY KEY, run_at TEXT, cite TEXT, source_id INTEGER, event_id INTEGER, status TEXT, detail TEXT
 );
 CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, at TEXT, action TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS figures (
+  no INTEGER PRIMARY KEY, slug TEXT, title TEXT, file TEXT, status TEXT, reason TEXT, caption TEXT, sha256 TEXT,
+  notes TEXT, data_sql TEXT, caps TEXT, meta TEXT, warnings TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS figure_refs (figure_no INTEGER, ord INTEGER, marker TEXT, fid TEXT, shows TEXT, cite TEXT);
 
 CREATE VIEW IF NOT EXISTS ev AS
   SELECT e.id, s.label || ':' || e.loc AS cite, s.label AS source, e.ts_utc, e.ts_raw, e.tz_basis, e.ts_flag,

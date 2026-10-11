@@ -29,6 +29,13 @@ DEFAULT_PARAMS = {
     "evidence_samples": 12,
     "table_rows": 25,
     "timeline_md_max": 5000,
+    # figures (deterministic SVG in report/figures; any cap that applies is printed on the figure)
+    "figures": True,
+    "figure_timeline_max_accounts": 12,  # account lanes on the activity timeline
+    "figure_timeline_max_markers": 12,   # numbered priority-1 markers on the activity timeline
+    "figure_links_max_clusters": 3,      # linked groups (panels) on the link chart
+    "figure_links_max_accounts": 12,     # accounts per link-chart panel
+    "figure_links_max_ips": 16,          # shared IPs per link-chart panel
     # pipeline
     "fts": True,
     "verify_hashes_at_end": True,

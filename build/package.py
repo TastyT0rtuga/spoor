@@ -1,7 +1,7 @@
 """Build the release ZIP from this checkout (after build/fetch_deps.py):
 
   1. remove caches; refuse to package a tree with cases, logs or settings in it
-  2. write PROGRAM.sha256 — SHA-256 of every program file (app, runtime, vendor, demo, tests,
+  2. write PROGRAM.sha256 — SHA-256 of every program file (app, runtime, vendor, demo, docs, tests,
      LICENSES and the root launchers/README); SELFTEST.bat checks the installed copy against it
   3. zip everything (plus an empty cases/ and the geoip/ and watchlists/ data) under a top-level
      Spoor/ folder into dist/Spoor-<version>.zip, and write dist/SHA256SUMS.txt
@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PROGRAM_DIRS = ["app", "runtime", "vendor", "demo", "tests", "LICENSES"]
+PROGRAM_DIRS = ["app", "runtime", "vendor", "demo", "docs", "tests", "LICENSES"]
 DATA_DIRS = ["geoip", "watchlists"]
 ROOT_FILES = ["Spoor.bat", "SELFTEST.bat", "spoor-cli.bat", "spoor.sh", "README.md", "LICENSE", "requirements.txt"]
 EXCLUDE_NAMES = {"__pycache__", ".DS_Store", "Thumbs.db", ".gitkeep"}

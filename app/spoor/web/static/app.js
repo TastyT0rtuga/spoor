@@ -56,7 +56,7 @@ const FIELDS = [["", "(not used)"], ["ts", "Timestamp"], ["date", "Date (separat
 const CATS = ["", "login", "login_failed", "logout", "account_change", "registration", "communication", "transaction", "other"];
 const ZONES = ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix", "America/Los_Angeles", "America/Anchorage",
   "Pacific/Honolulu", "Europe/London", "Europe/Berlin", "Europe/Kyiv", "Europe/Moscow", "Asia/Shanghai", "Asia/Tokyo", "UTC-08:00", "UTC-05:00"];
-const STAGE_SHORT = { prepare: "Hash", scan: "Map", ingest: "Read", index: "Index", analyze: "Analyse", report1: "Report", verify: "Verify", narrative: "AI draft", report2: "Final" };
+const STAGE_SHORT = { prepare: "Hash", scan: "Map", ingest: "Read", index: "Index", analyze: "Analyse", report1: "Report", figures: "Figures", verify: "Verify", narrative: "AI draft", report2: "Final" };
 
 /* ------------------------------------------------------------------ routing */
 function route() {
@@ -527,7 +527,7 @@ async function showAsk(id) {
 }
 
 /* ------------------------------------------------------------------ reports */
-const REPORT_NAMES = { "REPORT.md": "Report", "REVIEW.md": "Review checklist", "FINDINGS.md": "Findings", "EVIDENCE.md": "Evidence",
+const REPORT_NAMES = { "REPORT.md": "Report", "FIGURES.md": "Figures", "REVIEW.md": "Review checklist", "FINDINGS.md": "Findings", "EVIDENCE.md": "Evidence",
   "SOURCES.md": "Sources", "TIMELINE.md": "Timeline", "METHODS.md": "Methods", "CITATION_CHECK.md": "Citation check" };
 async function viewReports(v) {
   const r = await api(`/api/case/${enc(S.slug)}/reports`);
@@ -546,6 +546,7 @@ async function viewReports(v) {
   $$("img", box).forEach((im) => {
     const src = im.getAttribute("src");
     if (src && !/^(https?:|\/)/.test(src)) im.src = `/case/${enc(S.slug)}/file/${base}${src}`;
+    if (src && /^figures\/FIG\d+[\w-]*\.svg$/.test(src)) inlineFigure(im);
   });
   $$("a", box).forEach((a) => {
     const h = a.getAttribute("href") || "";
@@ -556,6 +557,28 @@ async function viewReports(v) {
     if (h && !h.startsWith("#")) a.setAttribute("href", `/case/${enc(S.slug)}/file/${base}${h}`);
   });
   if (anchor) { const t = document.getElementById(anchor); if (t) t.scrollIntoView(); }
+}
+
+/* Figures are shown inline so their markers can open the cited record. Only Spoor's own figure files are inlined,
+   and only after removing anything active (scripts, foreign content, event handlers, links). */
+async function inlineFigure(im) {
+  try {
+    const r = await fetch(im.src, { credentials: "same-origin" });
+    if (!r.ok) return;
+    const doc = new DOMParser().parseFromString(await r.text(), "image/svg+xml");
+    const svg = doc.documentElement;
+    if (!svg || svg.nodeName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) return;
+    svg.querySelectorAll("script, foreignObject, iframe, image, a, use").forEach((n) => n.remove());
+    svg.querySelectorAll("*").forEach((n) => [...n.attributes].forEach((a) => {
+      if (/^on/i.test(a.name) || /href$/i.test(a.name)) n.removeAttribute(a.name);
+    }));
+    svg.classList.add("figure");
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    const node = document.importNode(svg, true);
+    node.setAttribute("tabindex", "0");
+    im.replaceWith(node);
+  } catch (e) { /* keep the plain image */ }
 }
 
 /* ------------------------------------------------------------------ settings */
@@ -623,7 +646,9 @@ async function openBrowser(path) {
 /* ------------------------------------------------------------------ events */
 document.addEventListener("click", async (e) => {
   const cite = e.target.closest("code.cite, .cite[data-cite]");
-  if (cite) { e.preventDefault(); openCite(cite.dataset.cite || cite.textContent.trim()); return; }
+  if (cite) { e.preventDefault(); openCite(cite.dataset.cite || cite.getAttribute("data-cite") || cite.textContent.trim()); return; }
+  const fnd = e.target.closest("svg.figure [data-finding]");
+  if (fnd) { location.hash = `#/c/${enc(S.slug)}/findings/${enc(fnd.getAttribute("data-finding"))}`; return; }
   const go = e.target.closest("[data-go]");
   if (go) { location.hash = go.dataset.go; return; }
   const fs = e.target.closest("[data-fs]");

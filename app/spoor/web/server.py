@@ -319,6 +319,8 @@ def api_run(h, q, body, slug):
     try:
         from ..jobs import start_job
         params = {"llm": bool(body.get("llm", True))}
+        if body.get("figures") is not None:
+            params["figures"] = bool(body["figures"])
         if body.get("accounts") is not None:
             params["accounts"] = int(body["accounts"])
         try:
@@ -499,7 +501,7 @@ def api_ask_get(h, q, body, slug, aid):
 @route("GET", r"/api/case/([^/]+)/reports")
 def api_reports(h, q, body, slug):
     c = _case(slug)
-    order = ["REPORT.md", "REVIEW.md", "FINDINGS.md", "EVIDENCE.md", "SOURCES.md", "TIMELINE.md", "METHODS.md", "CITATION_CHECK.md"]
+    order = ["REPORT.md", "FIGURES.md", "REVIEW.md", "FINDINGS.md", "EVIDENCE.md", "SOURCES.md", "TIMELINE.md", "METHODS.md", "CITATION_CHECK.md"]
     files = []
     if c.report_dir.exists():
         for p in sorted(c.report_dir.rglob("*.md")):
@@ -583,7 +585,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-                                                    "script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+                                                    "font-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -670,6 +672,8 @@ class Handler(BaseHTTPRequestHandler):
             ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
             if p.suffix.lower() in (".md", ".csv", ".sha256", ".txt"):
                 ctype = "text/plain; charset=utf-8"
+            elif p.suffix.lower() == ".svg":          # the Windows registry may not know .svg
+                ctype = "image/svg+xml"
             extra = {"Content-Disposition": f'attachment; filename="{p.name}"'} if p.suffix.lower() == ".csv" else None
             self._send(200, p.read_bytes(), ctype, extra)
             return
