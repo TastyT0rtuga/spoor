@@ -21,6 +21,29 @@
 - Linked-group findings store their full account and IP lists; their reproduce-SQL applies the same
   address-class and shared-infrastructure filters as the analysis.
 - Self-test: 4 new checks (figures drawn, layout and safety, reproducible, cited findings re-read).
+- **Telecom returns** (call detail records and cell-site lists), any number of returns at once:
+  - Column mapping learns originating/terminating number, duration, first/last cell, latitude,
+    longitude, azimuth, beamwidth, site name, IMEI and IMSI (every choice editable under Sources);
+    a 'Cell' column holding phone numbers is not mistaken for a cell site. Target numbers named in
+    a preamble ("Target Number:", "MSISDN:") become the default account; numbers are E.164.
+  - New `tel` and `cell_sites` tables and a `calls` view (also available to Ask). Each call record
+    is placed at its cell site from inline coordinates or a tower list (same folder first; lists
+    that disagree are not used), and cites the tower-list row it was located from. A target that no
+    file names is inferred from the data and flagged as a priority-1 assumption.
+  - Findings ("Calls, texts & cell sites"): per-target profile and top contacts; direct contact
+    between targets; numbers in contact with 2+ targets and the target-by-target overlap table;
+    IMEIs/IMSIs on 2+ targets; handset/SIM changes; co-location (cell sites within 100 m within
+    15 minutes, across carriers by coordinates), stated as site co-location, not presence together.
+  - `exports/telecom.kml` (cell sites, sector wedges, time-stamped records per target, co-location;
+    no external references) and five telecom CSV exports.
+  - Figure 3, target–contact chart; co-location occasions marked on figure 1.
+  - Call records are no longer repeated as counterparty, shared-identifier or "other phones in this
+    account's records" findings (numbers that also appear in non-telecom records still are).
+  - Fictional telecom demo returns (`demo/telecom`, generator `tests/make_telecom_demo.py`);
+    10 new self-test checks; telecom unit and resume tests. 420,000 call records ran end to end in
+    about 3.5 minutes (no AI) using under 0.5 GB.
+- Fix: the citation check failed records whose time came from separate date and time columns.
+- Text messages typed only as 'Text'/'SMS-MO'/'SMS-MT' are now classified as communication.
 
 ## 1.0.0 — first public release
 

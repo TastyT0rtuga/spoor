@@ -148,7 +148,8 @@ def figures_tests():
         a, con = _figure_case(tmp / "a", "Figure test", demo_returns_dir())
         figs = figure_rows(con)
         ha = hashes(a)
-        ok([f["status"] for f in figs] == ["ok", "ok"] and len(ha) == 2, f"demo: both figures drawn ({sorted(ha)})")
+        ok([f["status"] for f in figs] == ["ok", "ok", "skipped"] and len(ha) == 2,
+           f"demo: both figures drawn, the telecom chart skipped (no telecom returns) ({sorted(ha)})")
         for name in sorted(ha):
             svg = (a.report_dir / "figures" / name).read_text(encoding="utf-8")
             probs = check_svg(svg)
@@ -206,8 +207,8 @@ def figures_tests():
         s2, con2 = _figure_case(tmp / "s2", "One day", tmp / "stress" / "short", tz="Europe/Moscow")
         for cc, cn, label in ((s1, con1, "stress"), (s2, con2, "one-day")):
             fr = figure_rows(cn)
-            ok([f["status"] for f in fr] == ["ok", "ok"], f"{label}: both figures drawn")
-            for f in fr:
+            ok([f["status"] for f in fr][:2] == ["ok", "ok"], f"{label}: both figures drawn")
+            for f in [f for f in fr if f.get("file")]:
                 svg = (cc.report_dir / "figures" / f["file"]).read_text(encoding="utf-8")
                 probs = check_svg(svg)
                 ok(not probs, f"{label} {f['file']}: no text outside its box or the canvas, no overlaps" + (f" - {probs[:3]}" if probs else ""))
@@ -229,6 +230,130 @@ def figures_tests():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def unit_telecom():
+    from spoor.mapping import propose_mapping
+    from spoor.telecom import km, norm_cell, norm_dir, norm_kind, norm_number, parse_duration
+    ok(norm_number("(703) 555-0101") == "+17035550101" and norm_number("17035550101") == "+17035550101"
+       and norm_number("72345") == "72345" and norm_number("+44 20 7946 0958") == "+442079460958" and norm_number("000") is None,
+       "numbers normalised (NANP to E.164, short codes and foreign numbers kept)")
+    ok(norm_cell("NL-1021-02") == norm_cell("nl 1021 2") == "NL-1021-2" and norm_cell("N/A") is None, "cell IDs compared without case, separators or leading zeros")
+    ok(parse_duration("00:06:46") == 406 and parse_duration("6:46") == 406 and parse_duration("95") == 95
+       and parse_duration("2.5", "Duration (min)") == 150 and parse_duration("12 sec") == 12, "durations read (HH:MM:SS, MM:SS, seconds, minutes header)")
+    ok(norm_dir("Outgoing", "") == "out" and norm_dir("", "MTC") == "in" and norm_dir("", "SMS-MO") == "out" and norm_dir("", "Voice") == "",
+       "direction from direction column or call type")
+    ok(norm_kind("SMS-MT") == "sms" and norm_kind("MOC") == "voice" and norm_kind("GPRS") == "data" and norm_kind("Text") == "sms",
+       "call / text / data kinds")
+    ok(abs(km(38.7521, -77.4739, 38.75228, -77.47371) * 1000 - 26) < 3, "site distance (haversine)")
+    m, _ = propose_mapping(["Name", "Cell", "Email"], {"Cell": ["(703) 555-0142"], "Name": ["J"], "Email": ["a@b.com"]})
+    ok("cell" not in m, "a 'Cell' column holding phone numbers is not read as a cell site")
+    m, _ = propose_mapping(["Date", "Called Number", "Duration"], {"Date": ["2024-04-01 10:00"], "Called Number": ["7035550101"], "Duration": ["12"]})
+    ok(m.get("counterparty") == "Called Number" and "term" not in m, "a lone called-number column is the other party")
+    m, _ = propose_mapping(["Cell ID", "Latitude", "Longitude", "Azimuth"],
+                           {"Cell ID": ["123"], "Latitude": ["38.1"], "Longitude": ["-77.2"], "Azimuth": ["120"]})
+    ok(m.get("cell") == "Cell ID" and m.get("lat") == "Latitude" and m.get("lon") == "Longitude" and m.get("azimuth") == "Azimuth",
+       "tower-list columns recognised")
+
+
+def telecom_tests():
+    import hashlib
+    import xml.etree.ElementTree as ET
+    from spoor.figures import figure_rows
+    from spoor.figures.svg import check_svg
+    sys.path.insert(0, str(ROOT / "tests"))
+    import make_telecom_demo
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-tel-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        make_telecom_demo.main(str(tmp / "returns"))
+        same = all((tmp / "returns" / p.relative_to(ROOT / "demo" / "telecom")).read_bytes() == p.read_bytes()
+                   for p in (ROOT / "demo" / "telecom").rglob("*") if p.is_file() and p.suffix != ".xlsx")
+        ok(same, "telecom demo generator reproduces the bundled demo files")
+
+        def outputs(c):
+            out = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((c.report_dir / "figures").glob("*.svg"))}
+            for n in ("telecom.kml", "colocation.csv", "common_contacts.csv", "target_overlap.csv", "telecom_records.csv"):
+                out[n] = hashlib.sha256((c.exports_dir / n).read_bytes()).hexdigest()
+            return out
+
+        a, con = _figure_case(tmp / "a", "Telecom", tmp / "returns")
+        ha = outputs(a)
+        pl = make_telecom_demo.PLANTED
+        rows = con.execute("SELECT kind, facts FROM findings WHERE module='telecom'").fetchall()
+        facts = [(k, json.loads(f)["values"]) for k, f in rows]
+        com = [x for k, x in facts if k == "telecom_common" and x["other"] == pl["common_contact_3"][0]]
+        ok(com and set(com[0]["targets"]) == pl["common_contact_3"][1], "telecom: the 3-target common contact found with the right targets")
+        com2 = [x for k, x in facts if k == "telecom_common" and x["other"] == pl["common_contact_2"][0]]
+        ok(com2 and set(com2[0]["targets"]) == pl["common_contact_2"][1], "telecom: the 2-target common contact found")
+        dirs = {tuple(sorted((x["target_a"], x["target_b"]))) for k, x in facts if k == "telecom_direct"}
+        ok(dirs == {tuple(sorted(d)) for d in pl["direct"]}, f"telecom: exactly the planted direct contacts ({dirs})")
+        sh = [x for k, x in facts if k == "telecom_shared_imei"]
+        ok(len(sh) == 1 and sh[0]["imei"] == pl["shared_imei"][0] and set(sh[0]["targets"]) == pl["shared_imei"][1], "telecom: shared IMEI")
+        ch = [x for k, x in facts if k == "telecom_imei_change" and x["target"] == pl["imei_change"][0]]
+        ok(ch and ch[0]["imeis"] == [pl["imei_change"][1], pl["imei_change"][2]], "telecom: handset change in time order")
+        co = {tuple(sorted((x["target_a"], x["target_b"]))) for k, x in facts if k == "telecom_colocation"}
+        ok(co == {tuple(sorted(c)) for c in pl["colocation"]}, f"telecom: exactly the planted co-locations ({co})")
+        cross = [x for k, x in facts if k == "telecom_colocation" and "+17035550101" in (x["target_a"], x["target_b"])]
+        ok(cross and 0 < cross[0]["closest_distance_m"] <= 100, "telecom: cross-carrier co-location by coordinates (sites ~26 m apart)")
+        mx = [x for k, x in facts if k == "telecom_overlap"]
+        ok(mx and mx[0]["most_shared"] == pl["common_contact_3"][0], "telecom: overlap table across all targets")
+        q = con.execute("SELECT COUNT(*) FROM findings WHERE module IN ('links','counterparties','idents') AND "
+                        "kind IN ('shared_identifier','counterparties','account_contacts')").fetchone()[0]
+        ok(q == 0, "telecom: no duplicate shared-identifier / counterparty findings for call records")
+        root = ET.parse(a.exports_dir / "telecom.kml").getroot()
+        ns = "{http://www.opengis.net/kml/2.2}"
+        folders = [f.find(ns + "name").text for f in root.iter(ns + "Folder")]
+        ok(folders[0] == "Cell sites" and folders[-1] == "Co-location occasions" and len(folders) == 6,
+           f"KML: cell sites, one folder per target, co-location ({len(folders)} folders)")
+        stamps = [w.text for w in root.iter(ns + "when")]
+        ok(stamps and all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", t) for t in stamps), "KML: every record time-stamped in UTC")
+        txt = (a.exports_dir / "telecom.kml").read_text(encoding="utf-8")
+        ok(txt.count("http") == 1 and "href" not in txt, "KML: no external references (icons, links)")
+        ok(re.search(r"Record: S\d+:L\d+", txt) and re.search(r"Site location: tower list in the same folder S\d+:L\d+", txt),
+           "KML: each point cites its call record and the tower-list row of its location")
+        figs = {f["slug"]: f for f in figure_rows(con)}
+        f3 = figs["contacts"]
+        ok(f3["status"] == "ok" and not check_svg((a.report_dir / "figures" / f3["file"]).read_text(encoding="utf-8")),
+           "target-contact chart drawn, layout checks pass")
+        drawn = {(t, k, n) for t, k, n in f3["meta"]["edges"] if "|" not in k}
+        got = {(r[0], r[1], r[2]) for r in con.execute(f3["data_sql"][0][1])}
+        ok(drawn and drawn <= got, "target-contact chart: the data query returns the lines drawn")
+        marks = {r["fid"] for r in figs["timeline"]["refs"]}
+        cofid = {r[0] for r in con.execute("SELECT fid FROM findings WHERE kind='telecom_colocation'")}
+        ok(cofid <= marks, "co-location marked on the activity timeline")
+        rv = (a.report_dir / "REVIEW.md").read_text(encoding="utf-8")
+        ok("read as telecom records - check the columns" in rv, "REVIEW.md asks to confirm the telecom column mapping")
+        mt = (a.report_dir / "METHODS.md").read_text(encoding="utf-8")
+        ok("### Telecom returns" in mt and "not that the users were together" in mt, "METHODS.md describes telecom reading and its limits")
+        cc = json.loads(con.execute("SELECT value FROM meta WHERE key='citation_check'").fetchone()[0])
+        ok(cc["fail"] == 0 and cc["total"] > 0, f"telecom: every cited record re-read and matched ({cc['pass']})")
+        # determinism and resume
+        b, _ = _figure_case(tmp / "b", "Telecom", tmp / "returns", interrupt=_cancel_once("spoor.telecom", "build"))
+        ok(outputs(b) == ha, "telecom: a run interrupted in the telecom stage, then resumed, gives identical figures, KML and exports")
+        # a CDR with no target named anywhere: the target is inferred and flagged
+        (tmp / "inf").mkdir()
+        lines = ["Date (UTC),Calling Number,Called Number,Duration"]
+        for i in range(30):
+            o, t = ("2025550177", f"30155501{i % 10:02d}") if i % 2 else (f"30155501{i % 10:02d}", "2025550177")
+            lines.append(f"2024-05-{1 + i % 20:02d} 1{i % 10}:00:00,{o},{t},{30 + i}")
+        (tmp / "inf" / "carrier_cdr.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        d, cond = _figure_case(tmp / "d", "Inferred", tmp / "inf")
+        tq = [json.loads(f)["values"] for (f,) in cond.execute("SELECT facts FROM findings WHERE kind='telecom_quality'")]
+        inf = (tq[0]["inferred_targets"] if tq else {})
+        ok(inf and list(inf.values())[0]["target"] == "+12025550177", f"target inferred from a CDR that names none ({inf})")
+        pr = cond.execute("SELECT priority FROM findings WHERE kind='telecom_quality'").fetchone()[0]
+        ok(pr == 1 and "inferred from the data" in (d.report_dir / "REVIEW.md").read_text(encoding="utf-8"),
+           "the inferred target is a priority-1 assumption in REVIEW.md")
+        dirs = dict(cond.execute("SELECT dir, COUNT(*) FROM tel GROUP BY dir").fetchall())
+        ok(dirs.get("out") == 15 and dirs.get("in") == 15, f"directions from the inferred target's side ({dirs})")
+    finally:
+        for k, v_ in old_env.items():
+            if v_ is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v_
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -286,11 +411,13 @@ def web_smoke():
 
 def main():
     for name, fn in (("time parsing", unit_time), ("identifiers", unit_identifiers), ("verifier", unit_verify),
-                     ("markdown", unit_markdown)):
+                     ("markdown", unit_markdown), ("telecom units", unit_telecom)):
         print(f"\n[{name}]")
         fn()
     print("\n[figures]")
     figures_tests()
+    print("\n[telecom]")
+    telecom_tests()
     print("\n[self-test]")
     from spoor.selftest import selftest
     ok(selftest(), "built-in self-test")

@@ -8,7 +8,8 @@ from .ips import IPs
 from .links import Links
 from .logins import Logins
 from .quality import Quality
+from .telecom import Telecom
 from .temporal import Temporal
 from .watchlist import Watchlist
 
-MODULES = [Quality, IPs, Logins, Temporal, Links, Identifiers, Counterparties, Watchlist, Activity]
+MODULES = [Quality, IPs, Logins, Temporal, Links, Telecom, Identifiers, Counterparties, Watchlist, Activity]

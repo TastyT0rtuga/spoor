@@ -51,6 +51,8 @@ class Identifiers(Analysis):
         # accounts named in the data that are themselves identifiers of other kinds (e.g. recovery emails)
         rec = self.q("SELECT e.account AS account, i.kind, i.norm, COUNT(*) AS n FROM identifiers i JOIN events e ON e.id=i.event_id "
                      "WHERE i.kind IN ('email','phone') AND e.account IS NOT NULL AND i.norm != lower(e.account) "
+                     "AND e.id NOT IN (SELECT event_id FROM tel) "   # call/text parties: see 'Calls, texts & cell sites'
+
                      "GROUP BY e.account, i.kind, i.norm ORDER BY e.account, n DESC LIMIT 5000")
         by: dict = {}
         for r in rec:

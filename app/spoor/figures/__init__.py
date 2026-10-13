@@ -10,7 +10,7 @@ import hashlib
 import json
 from .. import db as dbm
 from ..util import utc_now_str
-from . import linkchart, timeline
+from . import contacts, linkchart, timeline
 from .common import Ctx, Figure
 from .svg import check_svg
 
@@ -18,6 +18,7 @@ from .svg import check_svg
 FIGURES: list[tuple[int, str, str, str, object]] = [
     (1, "timeline", "Activity timeline", "Timing & activity patterns", timeline),
     (2, "links", "Account-IP link chart", "Links & cross-source", linkchart),
+    (3, "contacts", "Target-contact chart", "Calls, texts & cell sites", contacts),
 ]
 SECTION = {no: sec for no, _s, _t, sec, _b in FIGURES}
 

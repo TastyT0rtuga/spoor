@@ -252,7 +252,10 @@ def _lane_name(acc) -> str:
 
 
 # findings that describe something happening (as opposed to an IP or identifier seen over a period)
-EVENT_KINDS = ("failed_burst", "multi_account_failures", "change_from_new_ip", "network_switch", "account_cluster")
+EVENT_KINDS = ("failed_burst", "multi_account_failures", "change_from_new_ip", "network_switch", "account_cluster",
+               "telecom_colocation")
+# findings drawn at their closest pair of records (values closest_a/closest_ts_a, closest_b/closest_ts_b)
+CLOSEST_PAIR_KINDS = ("account_cluster", "telecom_colocation")
 
 
 def _moments(ctx: Ctx, lane_accounts: Optional[set]) -> tuple[list[dict], list[str]]:
@@ -266,7 +269,7 @@ def _moments(ctx: Ctx, lane_accounts: Optional[set]) -> tuple[list[dict], list[s
             longp.append(f["fid"])
             continue
         ev = [e for e in ctx.evidence(f["id"]) if e["ts_epoch"] is not None]
-        if f["kind"] == "account_cluster" and f["values"].get("closest_a"):
+        if f["kind"] in CLOSEST_PAIR_KINDS and f["values"].get("closest_a"):
             v = f["values"]
             pick = []
             for acc, ts in ((v["closest_a"], v.get("closest_ts_a")), (v["closest_b"], v.get("closest_ts_b"))):
@@ -547,7 +550,7 @@ def build(ctx: Ctx) -> Figure:
     if undrawn_m:
         notes.append("Priority-1 moments outside the drawn lanes: " + _fid_list(undrawn_m, 20) + ".")
     if longp:
-        notes.append("Other priority-1 findings concern IPs, identifiers or longer periods rather than one moment and are not marked: "
+        notes.append("Other priority-1 findings concern IPs, identifiers, contacts, devices or longer periods rather than one moment and are not marked: "
                      + _fid_list(longp, 30) + ".")
     if excluded_dateonly:
         notes.append(f"{fmt_n(excluded_dateonly)} date-only record(s) are not drawn at this {unit.per()} resolution.")
@@ -555,7 +558,7 @@ def build(ctx: Ctx) -> Figure:
     if implaus:
         notes.append(f"{fmt_n(implaus)} record(s) with implausible years are not drawn.")
     notes.append(f"Bars count activity records per UTC {unit.per()} (logins, failed logins, logouts, account changes, registrations, "
-                 "transactions, messages) - the TIMELINE data; each lane cites the account's activity finding. "
+                 "transactions, messages, calls and texts) - the TIMELINE data; each lane cites the account's activity finding. "
                  "Hover any element for its finding and values.")
     note_lines = []
     for n_ in notes:

@@ -29,6 +29,71 @@ DEMO_WATCHLIST = ("value,label,note\n159.89.0.0/16,DigitalOcean range (demo),fic
                   "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq,BTC address from a tip (demo),fictional demo entry\n")
 
 
+def demo_telecom_dir():
+    p = app_root() / "demo" / "telecom"
+    return p if p.exists() else None
+
+
+def telecom_checks(check) -> None:
+    """Telecom returns: three fictional carriers, four targets, planted cross-references."""
+    folder = demo_telecom_dir()
+    if folder is None:
+        check(False, "telecom demo returns present (demo/telecom)")
+        return
+    import xml.etree.ElementTree as ET
+    from . import db as dbm
+    from .case import create_case, register_path
+    from .figures import figure_rows
+    from .jobs import start_job
+    from .figures.svg import check_svg
+    c = create_case("Self-test telecom", "selftest", "", "America/New_York")
+    con = c.db()
+    register_path(c, con, str(folder))
+    print("\nRunning the full pipeline on the telecom demo returns…")
+    jid = start_job(c, con, "run", {"llm": False}, wait=True)
+    con = c.db()
+    job = dbm.rows(con, "SELECT status, error FROM jobs WHERE id=?", (jid,))[0]
+    check(job["status"] == "done", "telecom pipeline finished" + ("" if job["status"] == "done" else ": " + str(job["error"])))
+    targets = {r[0] for r in con.execute("SELECT DISTINCT target FROM tel WHERE target IS NOT NULL")}
+    check(targets == {"+17035550101", "+15715550102", "+12025550103", "+12405550104"},
+          f"four target numbers read from three carriers' layouts ({len(targets)} found)")
+    n, loc = con.execute("SELECT COUNT(*), SUM(lat IS NOT NULL) FROM tel").fetchone()
+    check(n and n == loc, f"every call record placed at its cell site ({loc} of {n}; tower lists and inline coordinates)")
+
+    def finding(kind, like=""):
+        return dbm.rows(con, "SELECT fid, statement, facts FROM findings WHERE kind=? AND statement LIKE ?", (kind, f"%{like}%"))
+
+    f = finding("telecom_common", "+17035550150 is in contact with 3 targets")
+    check(bool(f), "contact shared by three targets found (N-way cross-reference)")
+    check(bool(finding("telecom_direct", "+15715550102 and +17035550101")) and bool(finding("telecom_direct", "+12025550103 and +12405550104")),
+          "direct contact between targets found")
+    check(bool(finding("telecom_shared_imei", "356724")), "handset (IMEI) moving from one target to another found")
+    check(bool(finding("telecom_imei_change", "Target +17035550101 used 2 IMEIs")), "handset change of one target found")
+    co = {(json.loads(r["facts"])["values"]["target_a"], json.loads(r["facts"])["values"]["target_b"]):
+          json.loads(r["facts"])["values"]["occasions"] for r in finding("telecom_colocation")}
+    check(co.get(("+12025550103", "+12405550104")) == 3 and co.get(("+12025550103", "+17035550101")) == 1,
+          f"co-location found: across carriers by coordinates, and on one cell three times ({co})")
+    cc = dbm.get_meta(con, "citation_check") or {}
+    check(cc.get("total", 0) > 0 and cc.get("fail", 1) == 0, f"telecom citations re-read and matched ({cc.get('pass')} of {cc.get('total')})")
+    kml = c.exports_dir / "telecom.kml"
+    try:
+        root = ET.parse(kml).getroot()
+        pm = root.findall(".//{http://www.opengis.net/kml/2.2}Placemark")
+        txt = kml.read_text(encoding="utf-8")
+        check(len(pm) > n and txt.count("http") == 1 and "<script" not in txt.lower(),
+              f"KML written and valid ({len(pm)} placemarks, no external references)")
+    except (OSError, ET.ParseError) as e:
+        check(False, f"KML written and valid ({e})")
+    figs = {fg["slug"]: fg for fg in figure_rows(con)}
+    fg = figs.get("contacts") or {}
+    probs = check_svg((c.report_dir / "figures" / fg["file"]).read_text(encoding="utf-8")) if fg.get("file") else ["not drawn"]
+    check(fg.get("status") == "ok" and not probs, "target-contact chart drawn and passes the layout checks" + (f": {probs[:3]}" if probs else ""))
+    marks = [r["fid"] for r in dbm.rows(con, "SELECT fid FROM figure_refs WHERE figure_no=1")]
+    cofids = {r["fid"] for r in finding("telecom_colocation")}
+    check(cofids and cofids <= set(marks), "co-location occasions marked on the activity timeline")
+    con.close()
+
+
 def make_demo_case(run: bool = False):
     from .case import create_case, register_path
     c = create_case("Demo (fictional data)", "demo", "Fictional returns bundled with Spoor for practice", "America/New_York")
@@ -210,6 +275,7 @@ def selftest(keep: bool = False) -> bool:
         check(a["sql"] and a["sql"].lower().startswith("select") and n_ev > 0, "a model asked to delete data could not change anything")
         srv.shutdown()
         con.close()
+        telecom_checks(check)
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()

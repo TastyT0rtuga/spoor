@@ -436,8 +436,22 @@ class Report:
         assumptions = [f for f in self.findings if f["kind"] in ("tz_assumed", "tz_conflict", "date_order", "flag_ambiguous_dst",
                                                                     "flag_nonexistent_local_time", "flag_abbr_dst_mismatch",
                                                                     "flag_paired_by_proximity", "flag_two_digit_year")]
+        for f in self.findings:
+            if f["kind"] == "telecom_quality":
+                v = (f.get("facts") or {}).get("values", {})
+                if v.get("inferred_targets") or v.get("cross_folder_matches") or v.get("no_target") or v.get("unlocated"):
+                    assumptions.append(f)
         for f in assumptions:
             L.append(f"- [ ] {flink(f['fid'])} {md_escape(f['statement'])}")
+        for s in self.sources:
+            cfg = json.loads(s["config"]) if s.get("config") else {}
+            for t in cfg.get("tables", []):
+                m = t.get("mapping") or {}
+                tel = [k for k in ("orig", "term", "counterparty", "direction", "cell", "cell_last", "duration", "lat", "lon",
+                                   "azimuth", "imei", "imsi") if m.get(k)]
+                if s["status"] == "ingested" and any(k in m for k in ("orig", "term", "cell", "cell_last", "duration", "imsi")):
+                    L.append(f"- [ ] {s['label']} / {md_escape(t.get('name'))}: read as telecom records - check the columns: "
+                             + md_escape(", ".join(f"{k} = '{m[k]}'" for k in tel)) + ".")
         for s in self.sources:
             cfg = json.loads(s["config"]) if s.get("config") else {}
             if cfg.get("default_account") and s["status"] == "ingested":

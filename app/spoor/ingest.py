@@ -13,7 +13,7 @@ from . import db as dbm
 from . import readers
 from .identifiers import EMAIL_RE, extract as extract_ids, phone_from_cell
 from .ipaddr import classify, find_ips, split_ip_port, subnet_key
-from .mapping import (apply_status, categorize, default_account_from, propose_mapping,
+from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, propose_mapping,
                       suggest_default_category)
 from .timeparse import TsParser, TzSpec, fmt_utc, infer_date_order, suggest_source_tz
 from .util import sha256_file, utc_now_str
@@ -254,6 +254,9 @@ class Ctx:
         self.parsers: dict = {}
         self.tables = {t["name"]: t for t in cfg.get("tables", [])}
         self.imei_ctx = any("imei" in (h or "").lower() for t in cfg.get("tables", []) for h in (t.get("headers") or []))
+        # tables read as call detail records / cell-site lists (any telecom column mapped)
+        self.tel_tables = {t["name"] for t in cfg.get("tables", [])
+                           if any(k in (t.get("mapping") or {}) for k in ("orig", "term", "cell", "cell_last", "duration", "imsi"))}
 
     def parser(self, table: Optional[str], column: bool) -> TsParser:
         t = self.tables.get(table or "", {})
@@ -301,12 +304,31 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
         for h, v in cells.items():
             if h not in used and v not in (None, ""):
                 extra[h] = _txt(v, 2000)
+        tel = {}
+        for fld in TEL_FIELDS:
+            h = mapping.get(fld)
+            if h:
+                v = _txt(cells.get(h), 200)
+                if v is not None:
+                    tel[fld] = v
+        if tel:
+            extra["_tel"] = tel
+            if mapping.get("duration"):
+                extra["_tel_duration_header"] = mapping["duration"]
         for fld in ("account", "counterparty"):
             v = f.get(fld)
             if v not in (None, ""):
                 ph = phone_from_cell(_txt(v) or "")
                 if ph:
                     phone_cells.append((_txt(v), ph))
+        for fld in ("orig", "term"):
+            v = tel.get(fld)
+            if v:
+                ph = phone_from_cell(v)
+                if ph:
+                    phone_cells.append((v, ph))
+        if tel.get("imsi") and re.fullmatch(r"\d{14,15}", tel["imsi"]):
+            phone_cells.append(("__imsi__" + tel["imsi"], tel["imsi"]))
     else:
         f = dict(rec.fields)
     if rec.note:
@@ -373,6 +395,11 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
         acct, abasis = ctx.default_account, "source default"
     if acct and EMAIL_RE.fullmatch(acct):
         acct = acct.lower()
+    elif acct and (rec.table in ctx.tel_tables):
+        ph = phone_from_cell(acct)
+        if ph and ph != acct:
+            acct = ph                     # a target number written as 7035550101 / (703) 555-0101 -> +17035550101
+            abasis = (abasis + "; " if abasis else "") + "phone number normalised to E.164"
     action = _txt(f.get("action"), 500)
     status = apply_status(f.get("status"), action)
     dflt = tmeta.get("default_category", ctx.default_category) if tmeta else ctx.default_category
@@ -397,7 +424,8 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     }
     if rec.cells is not None:
         # identifiers from every cell except the time columns (they only add digits and colons)
-        skip = {mapping.get(k) for k in ("ts", "date", "time", "tz")}
+        skip = {mapping.get(k) for k in ("ts", "date", "time", "tz", "imsi", "lat", "lon", "azimuth", "beamwidth",
+                                         "duration")}
         id_text = " | ".join(str(v) for h, v in rec.cells.items() if h not in skip and v not in (None, ""))
         ids = extract_ids(id_text, imei_context=ctx.imei_ctx)
     else:
@@ -407,8 +435,13 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
         ids = [x for x in ids if not (x[0] in ("ipv4", "ipv6") and x[2] == ip)]
     have = {(k, n) for k, _r, n, _v in ids}
     for rawv, ph in phone_cells:
-        if ("phone", ph) not in have:
+        if rawv.startswith("__imsi__"):
+            if ("imsi", ph) not in have:
+                ids.append(("imsi", ph, ph, "format"))
+                have.add(("imsi", ph))
+        elif ("phone", ph) not in have:
             ids.append(("phone", rawv, ph, "format"))
+            have.add(("phone", ph))
     return ev, ids
 
 

@@ -27,6 +27,11 @@ def _check_values(ev: dict, text: str) -> list[str]:
     for col in ("ip_raw", "ts_raw"):
         v = ev.get(col)
         if v and _norm(str(v)) not in t:
+            # a time built from separate date and time (and zone) columns is stored joined by spaces:
+            # each part must then appear literally
+            parts = _norm(str(v)).split(" ")
+            if col == "ts_raw" and len(parts) > 1 and all(p in t for p in parts):
+                continue
             problems.append(f"{col} '{v}' not found in the re-read text")
     return problems
 

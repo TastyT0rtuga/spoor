@@ -1,8 +1,9 @@
 # Spoor — offline subpoena-return analysis
 
 Spoor reads large legal-process returns (provider login logs, IP logs, subscriber records, exchange
-and bank records, CDR-style logs), analyses them for **IP addresses, timing, logins, links between
-accounts and identifiers**, and writes a **Markdown report in which every statement cites the exact
+and bank records, telecom call detail records and cell-site lists), analyses them for **IP addresses,
+timing, logins, links between accounts and identifiers, and calls, texts and cell sites across any
+number of telecom returns at once**, and writes a **Markdown report in which every statement cites the exact
 line, row, page or JSON path of the original file it comes from**. It runs entirely on this computer:
 no installation, no internet, no outbound connections.
 
@@ -108,7 +109,8 @@ Everything is in `cases\<case>\report\`:
 | `REVIEW.md` | Tick-box checklist: every assumption, anything not analysed, priority-1 findings to confirm, AI sentences removed or flagged. |
 | `METHODS.md` | Exactly how each analysis works, its parameters, data sources and limitations — for your report or testimony prep. |
 | `CITATION_CHECK.md` | The result of re-reading every cited record from the original files after the analysis. |
-| `exports\*.csv` | Full timeline, IP inventory, **IP/timestamp/port list for follow-on legal process**, link-chart edges/nodes for i2 or Gephi, identifiers, accounts, counterparties. |
+| `exports\*.csv` | Full timeline, IP inventory, **IP/timestamp/port list for follow-on legal process**, link-chart edges/nodes for i2 or Gephi, identifiers, accounts, counterparties. Telecom returns add `telecom_records.csv` (every call/text with its cell site and both citations), `telecom_contacts.csv`, `common_contacts.csv`, `target_overlap.csv` and `colocation.csv`. |
+| `exports\telecom.kml` | Telecom returns: cell sites with sector wedges, every located call/text per target (time-stamped for the Google Earth time slider), co-location occasions. Opens offline in Google Earth Pro, ArcGIS or QGIS; no icon or network links. |
 | `questions\Q###.md`, `lookups\L###.md` | Saved answers from Ask and Look up. |
 | `MANIFEST.sha256` | SHA-256 of every file in the report folder. |
 
@@ -165,13 +167,14 @@ returns. Set **CPU threads** to 8 (the P-cores).
 | Identifiers | every email, phone, Bitcoin/Ethereum/TRON/Litecoin/Dogecoin/Monero address, MAC, IMEI and URL, kept only when its checksum verifies (Base58Check, Bech32/Bech32m, EIP-55, Luhn) |
 | Counterparties | most frequent counterparties per account; largest amounts (totals only within one currency) |
 | Watchlists | hits against your own lists of IPs, ranges and identifiers (format in `watchlists\README.txt`; README files are not read as lists) |
+| Calls, texts & cell sites | for any number of telecom returns at once: per-target totals, top contacts and minutes; **direct contact between targets**; **numbers in contact with 2+ targets** and a target-by-target table of contacts in common; **IMEIs/IMSIs on 2+ targets** and handset/SIM changes in time order; **co-location** (two targets served by cell sites within 100 m within 15 minutes, across carriers by coordinates); the KML; how every record was read and located |
 
 Thresholds (burst size, gap length, windows…) are under **Settings → Analysis settings** and are
 recorded in each case's `METHODS.md`.
 
 ### Figures
 
-Spoor draws two figures for every report, itself, from the findings - no language model is involved, and
+Spoor draws its figures for every report itself, from the findings - no language model is involved, and
 the same findings always give byte-identical files. Every mark carries the finding it comes from
 (F001…, as visible text or a numbered marker and as a tooltip); `FIGURES.md` lists each figure's sources.
 
@@ -179,10 +182,13 @@ the same findings always give byte-identical files. Every mark carries the findi
 |---|---|
 | 1. Activity timeline | One lane per account: activity records (the TIMELINE data) per UTC hour, day, week or month - whichever fits - with your local zone as a second scale. Long silences are cut from the axis and labelled with their length. Numbered markers in the accent colour are priority-1 events (failed-login bursts, account changes from a new IP, rapid network switches, the closest co-use of linked accounts) at their first cited record; a key lists them. |
 | 2. Account–IP link chart | One panel per group of accounts linked by shared IPs: the shared IPs in the middle, the accounts either side, each line labelled with that account's number of records on that IP. The closest co-use the finding reports is the only thing in the accent colour. |
+| 3. Target–contact chart | Telecom returns: the target numbers either side; in the middle every number in contact with two or more targets, and each pair of targets in direct contact (dashed box). Each line is labelled with that target's records with that number. The contact shared by the most targets is the only accent. Co-location occasions are also marked on figure 1. |
 
 ![Activity timeline drawn from the fictional demo returns](docs/FIG01-timeline.svg)
 
 ![Account–IP link chart drawn from the fictional demo returns](docs/FIG02-links.svg)
+
+![Target–contact chart drawn from the fictional telecom demo returns](docs/FIG03-contacts.svg)
 
 Limits (accounts, markers, linked groups and IPs per figure) are under **Analysis settings**; any limit
 that applies is printed on the figure with a pointer to the CSV holding the rest. Labels too long for
@@ -218,6 +224,16 @@ CSV/TSV/pipe/semicolon (any encoding, including Cyrillic cp1251 and UTF-16), Exc
 tables, and key/value layouts such as some providers' records pages), PDF (text extracted per page;
 **scanned pages are listed as not analysed — no OCR**), plain text and logs (Apache/Nginx, mbox),
 and ZIP (extracted into the case folder; each member hashed and cited separately).
+
+*Telecom returns:* call detail records are recognised from their columns - originating/terminating
+number (or other party + direction), call type, duration (HH:MM:SS, seconds or minutes), first/last
+cell or sector, IMEI, IMSI, and latitude/longitude/azimuth/beamwidth when a carrier writes them on each
+row. Cell-site (tower) lists are read the same way and matched to the call records by cell ID, preferring
+the list in the same folder (the same carrier). The target is the account column, else the number named
+in the preamble ("Target Number: 7035550101"); if neither exists, the number on one end of 80%+ of the
+records is used and flagged as a priority-1 assumption. Numbers are compared in E.164 (+17035550101).
+Check every mapping under Sources → the file; `REVIEW.md` lists each telecom table's columns for you
+to confirm. A record's location is the cell site that served it, not the phone.
 
 *Proximity pairing:* in free text where an IP and its time sit on different lines (HTML key/value
 pages), an IP line is paired with the nearest timestamp line within 6 lines, never across another
@@ -289,6 +305,7 @@ Spoor\
   geoip\            offline ASN and country data (DB-IP Lite, CC BY 4.0)
   watchlists\       optional lists checked in every case
   demo\returns\     fictional returns used by the self-test and the demo case
+  demo\telecom\     fictional call detail records and cell-site lists (three carriers, four targets)
   docs\             the example figures shown in this README (drawn from the demo returns)
   cases\            your cases (created on first use)
   tests\            developer tests (python tests\run_tests.py)

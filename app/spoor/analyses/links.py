@@ -114,6 +114,13 @@ class Links(Analysis):
     def shared_identifiers(self):
         rows = self.q("SELECT * FROM ident_summary WHERE kind NOT IN ('ipv4','ipv6','url') AND validity != 'bad_checksum' "
                       "AND (accounts >= 2 OR sources >= 2) ORDER BY accounts DESC, sources DESC, events DESC, norm")
+        has_tel = bool(self.one("SELECT 1 FROM tel LIMIT 1"))
+        if has_tel:
+            # numbers, IMEIs and IMSIs seen only in call/text records are reported under 'Calls, texts & cell sites';
+            # keep those that also appear in any other kind of record (a subscriber page, a login log...)
+            rows = [r for r in rows if r["kind"] not in ("phone", "imei", "imsi") or self.one(
+                "SELECT 1 FROM identifiers i WHERE i.kind=? AND i.norm=? AND i.event_id NOT IN (SELECT event_id FROM tel) LIMIT 1",
+                (r["kind"], r["norm"]))]
         for r in rows[: self.max]:
             per = self.q("SELECT e.account, i.source_id, COUNT(*) AS n, MIN(e.ts_utc) AS f, MAX(e.ts_utc) AS l "
                          "FROM identifiers i JOIN events e ON e.id=i.event_id WHERE i.kind=? AND i.norm=? "

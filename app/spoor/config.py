@@ -24,6 +24,13 @@ DEFAULT_PARAMS = {
     "link_include_nonpublic": False, # link accounts through private/CGNAT addresses too
     "coincidence_window_min": 60,    # two accounts on one IP within N minutes = co-use
     "subnet_min_ips": 3,             # subnets listed when they hold at least N distinct IPs
+    # telecom (call detail records, cell-site lists)
+    "tel_coloc_window_min": 15,      # two targets on the same / co-located cell site within N minutes
+    "tel_same_site_km": 0.1,         # cell sites this close are treated as one site (co-location, tower-list agreement)
+    "tel_top_contacts": 10,          # contacts listed per target
+    "tel_common_min_targets": 2,     # a contact shared by at least N targets is reported
+    "kml_max_points": 20000,         # call records drawn in the KML (all of them are in the CSV export)
+    "kml_sector_km": 1.0,            # length of the drawn sector wedges (a drawing aid - NOT a coverage estimate)
     # output limits (the full data always goes to CSV exports)
     "max_findings_per_kind": 150,
     "evidence_samples": 12,
@@ -36,6 +43,8 @@ DEFAULT_PARAMS = {
     "figure_links_max_clusters": 3,      # linked groups (panels) on the link chart
     "figure_links_max_accounts": 12,     # accounts per link-chart panel
     "figure_links_max_ips": 16,          # shared IPs per link-chart panel
+    "figure_contacts_max_targets": 12,   # target numbers on the target-contact chart
+    "figure_contacts_max_contacts": 16,  # shared contacts / direct-contact pairs on the target-contact chart
     # pipeline
     "fts": True,
     "verify_hashes_at_end": True,

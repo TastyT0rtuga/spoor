@@ -1,4 +1,5 @@
-"""Redraw the example figures in docs/ from the bundled fictional demo returns (shown in the README).
+"""Redraw the example figures in docs/ from the bundled fictional demo returns (shown in the README):
+figures 1 and 2 from demo/returns, figure 3 from demo/telecom.
 
 usage:  python build/make_docs_figures.py      (after build/fetch_deps.py, so the offline ASN/country data is present)
 
@@ -32,6 +33,15 @@ def main() -> None:
         out = ROOT / "docs"
         out.mkdir(exist_ok=True)
         for p in sorted((c.report_dir / "figures").glob("FIG*.svg")):
+            shutil.copyfile(p, out / p.name)
+            print(f"docs/{p.name}")
+        # the telecom figure comes from the fictional telecom returns
+        from spoor.case import create_case, register_path
+        t = create_case("Telecom demo (fictional data)", "demo", "Fictional call detail records bundled with Spoor", "America/New_York")
+        con = t.db()
+        register_path(t, con, str(ROOT / "demo" / "telecom"))
+        start_job(t, con, "run", {"llm": False}, wait=True)
+        for p in sorted((t.report_dir / "figures").glob("FIG03-*.svg")):
             shutil.copyfile(p, out / p.name)
             print(f"docs/{p.name}")
     finally:

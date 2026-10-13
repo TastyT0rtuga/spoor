@@ -17,13 +17,15 @@ CATEGORY_ORDER = [
     "Logins & account security",
     "Timing & activity patterns",
     "Links & cross-source",
+    "Calls, texts & cell sites",
     "Identifiers",
     "Counterparties & transactions",
     "Watchlist hits",
 ]
 CATEGORY_SLUG = {
     "Sources & data quality": "quality", "IP addresses": "ip", "Logins & account security": "logins",
-    "Timing & activity patterns": "temporal", "Links & cross-source": "links", "Identifiers": "identifiers",
+    "Timing & activity patterns": "temporal", "Links & cross-source": "links",
+    "Calls, texts & cell sites": "telecom", "Identifiers": "identifiers",
     "Counterparties & transactions": "counterparties", "Watchlist hits": "watchlist",
 }
 

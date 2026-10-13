@@ -6,18 +6,28 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from .identifiers import EMAIL_RE
+from .identifiers import EMAIL_RE, phone_from_cell
 from .ipaddr import split_ip_port
 from .timeparse import TsParser, TzSpec
 
 FIELDS = ["ts", "date", "time", "tz", "ip", "port", "account", "action", "status", "user_agent",
-          "device", "location", "counterparty", "direction", "amount", "currency"]
+          "device", "location", "counterparty", "direction", "amount", "currency",
+          # telecom (call detail records and cell-site lists)
+          "orig", "term", "duration", "cell", "cell_last", "lat", "lon", "azimuth", "beamwidth",
+          "site_name", "imei", "imsi"]
+TEL_FIELDS = ("orig", "term", "duration", "cell", "cell_last", "lat", "lon", "azimuth", "beamwidth",
+              "site_name", "imei", "imsi")
 FIELD_LABELS = {
     "ts": "Timestamp", "date": "Date (separate column)", "time": "Time (separate column)",
     "tz": "Per-row timezone", "ip": "IP address", "port": "Source port", "account": "Account / user",
     "action": "Event / activity", "status": "Result / status", "user_agent": "User agent",
     "device": "Device / platform", "location": "Provider location", "counterparty": "Counterparty / other party",
     "direction": "Direction", "amount": "Amount", "currency": "Currency / asset",
+    "orig": "Originating number (A party)", "term": "Terminating number (B party)",
+    "duration": "Call / session duration", "cell": "Cell / sector (first)", "cell_last": "Cell / sector (last)",
+    "lat": "Cell site latitude", "lon": "Cell site longitude", "azimuth": "Sector azimuth (degrees)",
+    "beamwidth": "Sector beamwidth (degrees)", "site_name": "Cell site name", "imei": "IMEI / device ID",
+    "imsi": "IMSI (SIM)",
 }
 CATEGORIES = ["login", "login_failed", "logout", "account_change", "registration", "communication",
               "transaction", "other"]
@@ -39,24 +49,51 @@ SYN: dict[str, list[str]] = {
     "account": ["логин", "пользователь", "аккаунт", "учетная запись", "учётная запись", "subscriber id", "subscriberid", "customer number", "account", "account id", "accountid", "user", "username", "user name", "userid", "user id",
                 "login", "account name", "subscriber", "customer id", "customer", "target", "account identifier",
                 "screen name", "handle", "uid", "member id", "profile", "email address", "account email",
-                "user email", "principal", "gaia id", "target account", "account number", "msisdn"],
+                "user email", "principal", "gaia id", "target account", "account number", "msisdn",
+                "target number", "target msisdn", "target mdn", "mdn", "target phone", "subscriber number"],
     "action": ["действие", "событие", "тип события", "операция", "action", "activity", "event", "event type", "type", "activity type", "operation",
                "description", "login type", "event name", "event description", "action type", "activity name",
-               "record type", "method", "auth type"],
+               "record type", "method", "auth type", "call type", "service type", "usage type",
+               "event type", "cdr type"],
     "status": ["статус", "результат", "status", "result", "outcome", "success", "login status", "succeeded", "login result", "auth result"],
     "user_agent": ["браузер", "юзер агент", "user agent", "useragent", "ua", "browser", "user agent string", "client", "client info",
                    "cs user agent", "http user agent", "agent"],
     "device": ["устройство", "mac", "mac address", "macaddress", "hardware address", "device", "device id", "device name", "device model", "platform", "os", "operating system",
-               "imei", "device type", "hardware", "model", "device info", "app version", "client name"],
+               "device type", "hardware", "model", "device info", "app version", "client name", "handset", "handset model"],
     "location": ["город", "страна", "местоположение", "location", "city", "region", "country", "geo", "geolocation", "approximate location",
                  "country code", "state"],
     "counterparty": ["получатель", "отправитель", "контрагент", "собеседник", "to", "from", "recipient", "sender", "counterparty", "destination", "dialed", "called",
                      "calling", "other party", "beneficiary", "payee", "payer", "to address", "from address",
                      "destination address", "source address", "originating", "terminating", "called number",
-                     "calling number", "to number", "from number", "receiver", "peer", "contact"],
+                     "calling number", "to number", "from number", "receiver", "peer", "contact", "other number",
+                     "other party number", "other party", "dialed number", "remote number"],
     "direction": ["direction", "call direction", "in out", "inbound outbound", "dir"],
     "amount": ["сумма", "amount", "value", "amount usd", "usd amount", "quantity", "total", "sum", "amt", "debit", "credit"],
     "currency": ["валюта", "currency", "asset", "coin", "ccy", "token", "symbol", "unit"],
+    "orig": ["originating number", "originating", "originating party", "calling number", "calling party",
+             "calling party number", "a number", "a party", "a party number", "from number", "caller", "orig number",
+             "originating msisdn", "calling msisdn", "source number"],
+    "term": ["terminating number", "terminating", "terminating party", "called number", "called party",
+             "called party number", "b number", "b party", "b party number", "to number", "dialed number",
+             "dialed digits", "term number", "terminating msisdn", "called msisdn", "destination number"],
+    "duration": ["duration", "elapsed time", "call duration", "duration sec", "duration secs", "duration seconds",
+                 "duration s", "duration min", "duration mins", "duration minutes", "seizure time", "air time", "airtime",
+                 "call length", "session duration", "elapsed", "dur", "duration hh mm ss"],
+    "cell": ["first cell", "first cell site", "first cell id", "cell", "cell id", "cellid", "cell site", "cell site id",
+             "site id", "sector id", "sector", "enodeb sector", "enodeb", "enb", "enb sector", "ecgi", "cgi", "nci", "lac ci",
+             "lac cell", "tower id", "first tower", "originating cell", "start cell", "serving cell", "cell tower",
+             "first serving cell", "cell sector", "gnodeb", "first sector", "sector key"],
+    "cell_last": ["last cell", "last cell site", "last cell id", "end cell", "ending cell", "terminating cell", "last tower",
+                  "final cell", "last serving cell", "last sector"],
+    "lat": ["latitude", "lat", "tower latitude", "site latitude", "cell latitude", "tower lat", "site lat", "lat dd",
+            "latitude dd"],
+    "lon": ["longitude", "long", "lon", "lng", "tower longitude", "site longitude", "cell longitude", "tower long",
+            "tower lon", "site lon", "site long", "long dd", "longitude dd"],
+    "azimuth": ["azimuth", "azm", "az", "sector azimuth", "orientation", "azimuth deg", "antenna azimuth", "bearing"],
+    "beamwidth": ["beamwidth", "beam width", "horizontal beamwidth", "hbw", "beam width deg", "antenna beamwidth"],
+    "site_name": ["site name", "tower name", "cell site name", "cell name", "sector name", "site address", "tower address"],
+    "imei": ["imei", "imeisv", "imei sv", "device imei", "meid", "esn", "imei number", "handset imei"],
+    "imsi": ["imsi", "subscriber imsi", "sim imsi", "imsi number"],
 }
 _NORM_RE = re.compile(r"[^0-9a-z\u0430-\u044f\u0451]+")
 _PAREN_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
@@ -92,6 +129,7 @@ def header_score(field: str, header: str) -> float:
 _TIME_ONLY = re.compile(r"^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:\s*[AaPp]\.?[Mm]\.?)?(?:\s*[A-Za-z]{1,5}|\s*[+-]\d{2}:?\d{2})?$")
 _NUMERIC = re.compile(r"^[-+]?\(?\s?[$€£¥]?\s?\d[\d.,' ]*\)?\s?[$€£¥]?$")
 _UA = re.compile(r"Mozilla/|AppleWebKit|Dalvik/|CFNetwork|okhttp|Windows NT|Android \d|iPhone OS|Darwin/", re.I)
+_DECIMAL = re.compile(r"^[-+]?\d{1,3}(?:\.\d+)?$")
 _STATUS_WORDS = re.compile(r"^(?:success\w*|succeeded|ok|true|false|fail\w*|denied|rejected|invalid|error|blocked|"
                            r"allowed|accepted|approved|declined|completed|pending|yes|no|pass|passed)$", re.I)
 
@@ -106,7 +144,7 @@ def value_evidence(values: list) -> dict[str, float]:
     p2 = TsParser(TzSpec("UTC", assumed=True), date_order="DMY", column_mode=False)
     pe = TsParser(TzSpec("UTC", assumed=True), column_mode=True)
     ev = {k: 0.0 for k in ("ip", "ts", "ts_epoch", "date_only", "time_only", "ua", "email", "numeric",
-                          "status", "port", "ip_port")}
+                          "status", "port", "ip_port", "phone", "lat", "lon", "deg")}
     for v in vals:
         s = str(v).strip()
         sp = split_ip_port(s) if len(s) <= 60 else None
@@ -136,6 +174,16 @@ def value_evidence(values: list) -> dict[str, float]:
                 ev["port"] += 1
         if _STATUS_WORDS.match(s):
             ev["status"] += 1
+        if phone_from_cell(s):
+            ev["phone"] += 1
+        if _DECIMAL.match(s):
+            x = float(s)
+            if abs(x) <= 90 and "." in s:
+                ev["lat"] += 1
+            if abs(x) <= 180 and "." in s:
+                ev["lon"] += 1
+            if 0 <= x <= 360:
+                ev["deg"] += 1
     return {k: v / n for k, v in ev.items()}
 
 
@@ -174,15 +222,24 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
                 s = s + 1 if e.get("status", 0) >= 0.8 else (s if e.get("status", 0) > 0.3 else s * 0.3)
             elif f == "amount":
                 s = s if e.get("numeric", 0) >= 0.8 else 0
-            elif f in ("action", "device", "location", "counterparty", "direction", "currency", "tz"):
+            elif f in ("action", "device", "location", "counterparty", "direction", "currency", "tz",
+                       "orig", "term", "duration", "imei", "imsi", "site_name"):
                 if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5:
                     s = 0
+            elif f in ("cell", "cell_last"):
+                if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5 or e.get("phone", 0) >= 0.8 or e.get("email", 0) > 0.5:
+                    s = 0       # a column named 'Cell' holding phone numbers is a mobile number, not a cell site
+            elif f in ("lat", "lon"):
+                s = s if e.get(f, 0) >= 0.8 else 0
+            elif f in ("azimuth", "beamwidth"):
+                s = s if e.get("deg", 0) >= 0.8 else 0
             scores[f][h] = s
     mapping: dict[str, str] = {}
     notes: list[str] = []
     used: set[str] = set()
-    order = ["ip", "ts", "date", "time", "user_agent", "account", "action", "status", "port", "counterparty",
-             "amount", "currency", "device", "location", "direction", "tz"]
+    order = ["ip", "ts", "date", "time", "user_agent", "orig", "term", "account", "action", "status", "port",
+             "cell_last", "cell", "lat", "lon", "azimuth", "beamwidth", "site_name", "duration", "imei", "imsi",
+             "counterparty", "amount", "currency", "device", "location", "direction", "tz"]
     for f in order:
         cands = sorted(((s, h) for h, s in scores[f].items() if h not in used and s >= 1.5),
                        key=lambda t: (-t[0], headers.index(t[1])))
@@ -210,6 +267,19 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
         if f == "user_agent" and e.get("ua"):
             why.append(f"{e.get('ua', 0):.0%} of sample values look like user-agent strings")
         notes.append(f"{f} = column '{h}' ({'; '.join(why) or 'best match'})")
+    if ("orig" in mapping) != ("term" in mapping):
+        # one of the pair alone is just 'the other party' (the target is the other end)
+        f = "orig" if "orig" in mapping else "term"
+        h = mapping.pop(f)
+        notes = [n for n in notes if not n.startswith(f + " = ")]
+        if "counterparty" not in mapping:
+            mapping["counterparty"] = h
+            notes.append(f"counterparty = column '{h}' (only one of originating/terminating present)")
+    if ("lat" in mapping) != ("lon" in mapping):
+        f = "lat" if "lat" in mapping else "lon"
+        mapping.pop(f)
+        notes = [n for n in notes if not n.startswith(f + " = ")]
+        notes.append(f"{f} column ignored: latitude and longitude must both be present")
     if "ts" not in mapping and ("date" in mapping) != ("time" in mapping):
         # a lone date column is still a (date-only) timestamp
         if "date" in mapping:
@@ -239,7 +309,7 @@ RE_CHANGE = re.compile(_W + r"(?:password|passcode|pin change|2fa|two ?factor|2 
                        r"(?:change|changed|update|updated|add|added|remove|removed) (?:email|e mail|phone|mobile|password|recovery|address|name|username|device|2fa|mfa)|"
                        r"account (?:recovery|update|updated|deactivat\w*|reactivat\w*|delet\w*|disabled|enabled|locked|unlocked|suspend\w*|restor\w*)|парол\w*|смена\w*)" + _E)
 RE_COMM = re.compile(_W + r"(?:call|calls|called|voice|sms|mms|text message|message|messages|messaged|chat|direct message|dm|voicemail|dialed|"
-                     r"mo call|mt call|moc|mtc|incoming call|outgoing call|missed call)" + _E)
+                     r"mo call|mt call|moc|mtc|incoming call|outgoing call|missed call|text|texts|txt|sms mo|sms mt|volte|vowifi)" + _E)
 RE_TXN = re.compile(_W + r"(?:deposit\w*|withdraw\w*|transfer\w*|payment\w*|purchase\w*|trade|traded|trades|buy|bought|sell|sold|"
                     r"send|sent|receive|received|transaction\w*|charge\w*|refund\w*|wire|ach|zelle|payout\w*|swap\w*|convert\w*)" + _E)
 SUCCESS_WORDS = {"success", "successful", "succeeded", "ok", "true", "pass", "passed", "allowed", "accepted",
@@ -317,7 +387,8 @@ def default_account_from(texts: list[tuple[str, str]]) -> tuple[str | None, str]
 
     Values containing spaces (a person's name, an address) are not treated as account identifiers."""
     lab = re.compile(r"(?:^|\b)(?:account|target|subscriber|user ?name|user|e-?mail|account id|uid|screen name|handle|login|"
-                     r"логин|аккаунт|пользователь)\s*(?:identifier|id|name)?\s*[:=#]\s*(.+)$", re.I)
+                     r"msisdn|mdn|логин|аккаунт|пользователь)\s*(?:identifier|id|name|number|no\.?|phone|msisdn|mdn|"
+                     r"telephone number|phone number)?\s*[:=#]\s*(.+)$", re.I)
     for cite, t in texts:
         m = lab.search(t.strip())
         if m:

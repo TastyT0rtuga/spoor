@@ -174,6 +174,16 @@ CREATE TABLE IF NOT EXISTS figures (
   no INTEGER PRIMARY KEY, slug TEXT, title TEXT, file TEXT, status TEXT, reason TEXT, caption TEXT, sha256 TEXT,
   notes TEXT, data_sql TEXT, caps TEXT, meta TEXT, warnings TEXT, created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS tel (
+  event_id INTEGER PRIMARY KEY, source_id INTEGER, target TEXT, target_basis TEXT, other TEXT, other_raw TEXT,
+  dir TEXT, kind TEXT, ts_epoch REAL, ts_utc TEXT, duration_s REAL, cell TEXT, cell_last TEXT,
+  lat REAL, lon REAL, azimuth REAL, beamwidth REAL, site_name TEXT, loc_basis TEXT, loc_event_id INTEGER,
+  imei TEXT, imsi TEXT, note TEXT
+);
+CREATE TABLE IF NOT EXISTS cell_sites (
+  id INTEGER PRIMARY KEY, cell TEXT, source_id INTEGER, event_id INTEGER, origin TEXT, site_name TEXT,
+  lat REAL, lon REAL, azimuth REAL, beamwidth REAL
+);
 CREATE TABLE IF NOT EXISTS figure_refs (figure_no INTEGER, ord INTEGER, marker TEXT, fid TEXT, shows TEXT, cite TEXT);
 
 CREATE VIEW IF NOT EXISTS ev AS
@@ -191,6 +201,12 @@ CREATE VIEW IF NOT EXISTS ids AS
   FROM events e JOIN sources s ON s.id = e.source_id WHERE e.ip IS NOT NULL;
 CREATE VIEW IF NOT EXISTS src AS
   SELECT label AS source, display AS file, kind, sha256, rows FROM sources WHERE status = 'ingested';
+CREATE VIEW IF NOT EXISTS calls AS
+  SELECT t.event_id AS id, s.label || ':' || e.loc AS cite, s.label AS source, t.ts_utc, t.target, t.other, t.dir,
+         t.kind, t.duration_s, t.cell, t.cell_last, t.lat, t.lon, t.azimuth, t.site_name, t.loc_basis,
+         (SELECT s2.label || ':' || e2.loc FROM events e2 JOIN sources s2 ON s2.id = e2.source_id
+           WHERE e2.id = t.loc_event_id) AS loc_cite, t.imei, t.imsi, e.raw
+  FROM tel t JOIN events e ON e.id = t.event_id JOIN sources s ON s.id = t.source_id;
 CREATE VIEW IF NOT EXISTS fnd AS
   SELECT fid, category, title, statement FROM findings WHERE fid IS NOT NULL;
 """
@@ -204,6 +220,10 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_id_norm ON identifiers(norm)",
     "CREATE INDEX IF NOT EXISTS ix_id_event ON identifiers(event_id)",
     "CREATE INDEX IF NOT EXISTS ix_fe_event ON finding_evidence(event_id)",
+    "CREATE INDEX IF NOT EXISTS ix_tel_target ON tel(target, ts_epoch)",
+    "CREATE INDEX IF NOT EXISTS ix_tel_other ON tel(other)",
+    "CREATE INDEX IF NOT EXISTS ix_tel_ts ON tel(ts_epoch)",
+    "CREATE INDEX IF NOT EXISTS ix_cs_cell ON cell_sites(cell)",
 ]
 SOURCE_INDEXES = ["CREATE INDEX IF NOT EXISTS ix_ev_source ON events(source_id, seq)",
                   "CREATE INDEX IF NOT EXISTS ix_id_event ON identifiers(event_id)"]
@@ -224,14 +244,14 @@ def connect(path, readonly: bool = False) -> sqlite3.Connection:
     return con
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def init(con: sqlite3.Connection) -> None:
     con.executescript(SCHEMA)
     r = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if not r or r[0] != str(SCHEMA_VERSION):
-        for v in ("ev", "ids", "src", "fnd"):
+        for v in ("ev", "ids", "src", "fnd", "calls"):
             con.execute(f"DROP VIEW IF EXISTS {v}")
         con.executescript(SCHEMA)
         con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))

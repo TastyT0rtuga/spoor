@@ -52,7 +52,11 @@ const S = { state: null, slug: null, view: "overview", param: null, c: null, tim
 const FIELDS = [["", "(not used)"], ["ts", "Timestamp"], ["date", "Date (separate)"], ["time", "Time (separate)"], ["tz", "Per-row timezone"],
   ["ip", "IP address"], ["port", "Source port"], ["account", "Account / user"], ["action", "Event / activity"], ["status", "Result / status"],
   ["user_agent", "User agent"], ["device", "Device / platform"], ["location", "Provider location"], ["counterparty", "Counterparty"],
-  ["direction", "Direction"], ["amount", "Amount"], ["currency", "Currency / asset"]];
+  ["direction", "Direction"], ["amount", "Amount"], ["currency", "Currency / asset"],
+  ["orig", "Telecom: originating number"], ["term", "Telecom: terminating number"], ["duration", "Telecom: duration"],
+  ["cell", "Telecom: first cell / sector"], ["cell_last", "Telecom: last cell / sector"], ["lat", "Telecom: site latitude"],
+  ["lon", "Telecom: site longitude"], ["azimuth", "Telecom: sector azimuth"], ["beamwidth", "Telecom: beamwidth"],
+  ["site_name", "Telecom: site name"], ["imei", "Telecom: IMEI"], ["imsi", "Telecom: IMSI"]];
 const CATS = ["", "login", "login_failed", "logout", "account_change", "registration", "communication", "transaction", "other"];
 const ZONES = ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix", "America/Los_Angeles", "America/Anchorage",
   "Pacific/Honolulu", "Europe/London", "Europe/Berlin", "Europe/Kyiv", "Europe/Moscow", "Asia/Shanghai", "Asia/Tokyo", "UTC-08:00", "UTC-05:00"];

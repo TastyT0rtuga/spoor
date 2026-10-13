@@ -34,7 +34,7 @@ KIND_LABELS = {
     "ipv4": "IPv4 address", "ipv6": "IPv6 address", "email": "email address", "phone": "phone number",
     "btc": "Bitcoin address", "ltc": "Litecoin address", "doge": "Dogecoin address",
     "trx": "TRON address", "eth": "Ethereum/EVM address", "xmr": "Monero address",
-    "mac": "MAC address", "imei": "IMEI", "url": "URL",
+    "mac": "MAC address", "imei": "IMEI", "imsi": "IMSI", "url": "URL",
 }
 
 

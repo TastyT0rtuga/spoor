@@ -23,12 +23,17 @@ ev(id, cite, source, ts_utc, ts_raw, tz_basis, ts_flag, ip, ip_class, port, acco
   - ip_class is one of: public, private, cgnat, loopback, link-local, multicast, documentation, reserved, nat64.
   - action = the provider's own event text; raw = the verbatim record text.
 ids(kind, value, validity, cite, source, ts_utc, account)
-  - identifiers found in records. kind: email, phone (E.164 like +17035550142), btc, eth (lower-case), ltc, trx, doge, xmr, mac, imei, url, ipv4, ipv6.
+  - identifiers found in records. kind: email, phone (E.164 like +17035550142), btc, eth (lower-case), ltc, trx, doge, xmr, mac, imei, imsi, url, ipv4, ipv6.
 ip_summary(ip, ip_ver, ip_class, subnet, events, accounts, sources, first_utc, last_utc, ports, asn, as_org, country)
 ip_accounts(ip, account, events, first_utc, last_utc)
 account_summary(account, events, sources, logins, failures, logouts, changes, ips, public_ips, user_agents, first_utc, last_utc)
 src(source, file, kind, sha256, rows)
 fnd(fid, category, title, statement)   -- the report's findings
+calls(id, cite, source, ts_utc, target, other, dir, kind, duration_s, cell, cell_last, lat, lon, azimuth, site_name, loc_basis, loc_cite, imei, imsi, raw)
+  - one row per call / text / data session from telecom returns (call detail records). target and other are phone numbers in
+    E.164 (+17035550101) when they are North American or written with '+', otherwise digits. dir is 'out' or 'in' (from the
+    target's side); kind is voice, sms, mms, data or other; duration_s in seconds; cell = first cell/sector ID;
+    lat/lon = that cell site's coordinates and loc_cite the tower-list row they came from.
 """
 
 RULES = """Write ONE SQLite SELECT statement that answers the question.
@@ -50,6 +55,10 @@ EXAMPLES = [
     ("Which accounts share an IP address?",
      "SELECT a.ip, a.account AS account_a, b.account AS account_b, a.events AS events_a, b.events AS events_b FROM ip_accounts a "
      "JOIN ip_accounts b ON a.ip = b.ip AND a.account < b.account ORDER BY a.ip LIMIT 500"),
+    ("Which numbers did both +17035550101 and +15715550102 call or text?",
+     "SELECT other, COUNT(*) AS records, COUNT(DISTINCT target) AS targets, MIN(ts_utc) AS first_utc, MAX(ts_utc) AS last_utc, "
+     "MIN(cite) AS example_cite FROM calls WHERE target IN ('+17035550101', '+15715550102') AND other IS NOT NULL GROUP BY other "
+     "HAVING COUNT(DISTINCT target) = 2 ORDER BY records DESC LIMIT 500"),
     ("Where does the bitcoin address bc1qexample appear?",
      "SELECT cite, source, ts_utc, account, value FROM ids WHERE kind = 'btc' AND value = 'bc1qexample' ORDER BY ts_utc LIMIT 500"),
 ]

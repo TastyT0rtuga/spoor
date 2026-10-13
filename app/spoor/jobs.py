@@ -349,6 +349,8 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     prog.message("Looking up networks (offline ASN/country data)")
     derive.enrich_ips(con, prog)
     prog.stage("index")
+    from . import telecom
+    telecom.build(con, p, prog, log)     # calls/texts/cell sites; may fill in an inferred target number
     derive.build_summaries(con, prog)
     fts = derive.build_fts(con, bool(p.get("fts", True)), prog)
     dbm.set_meta(con, "fts", fts)
@@ -372,6 +374,8 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
         con.commit()
         prog.update(i + 1)
     n = number_findings(con)
+    from .kml import write_kml
+    write_kml(case, con, p)           # after numbering, so co-location points carry their finding IDs
     from .figures import invalidate as invalidate_figures
     invalidate_figures(case, con)     # figures are redrawn from the new findings in the Figures stage
     fp = findings_fingerprint(con)
