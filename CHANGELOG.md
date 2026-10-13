@@ -42,6 +42,30 @@
   - Fictional telecom demo returns (`demo/telecom`, generator `tests/make_telecom_demo.py`);
     10 new self-test checks; telecom unit and resume tests. 420,000 call records ran end to end in
     about 3.5 minutes (no AI) using under 0.5 GB.
+- **Carrier layouts** (checked against real-world formats; fixtures are fictional):
+  - One cell identity for every carrier: decimal ECI / LTE_CI / E_CGI / CGI, hex ECGI ('311480-0c82216'),
+    'MCC-MNC-eNodeB-cell', 15-digit ECGI, eNodeB + sector / cell-face columns, AT&T CellLocation
+    '[ECI:eNodeB:lon:lat:az:...]'. Tower lists joined on it (same folder first); missing azimuth and
+    beamwidth taken from the list.
+  - Tower lists recognised even with a list-date column; report text files with several tables (voice +
+    data; one tower-dump section per search) read table by table; a bare carriage return inside a quoted
+    cell no longer breaks a CSV.
+  - Targets from carrier file-naming conventions and preamble labels ('o Target MSISDN :', 'Voice Usage
+    For:'); MTN as an account column; GMT/UTC column preferred when the carrier gives local time too; a
+    midnight-only date column combined with its 'time' column; Verizon CPN / Called # as the two parties;
+    MF (forwarded) legs kept but not counted; RCS chats counted with texts; IMEIs compared on 14 digits and
+    spreadsheet-damaged (scientific-notation) IMEIs/IMSIs flagged.
+  - **Tower dumps**: the phone on the tower is the record's subject; dumps from any number of carriers are
+    grouped into scenes by time; phones and handsets at 2+ scenes and dump phones that are targets or their
+    contacts are reported. Tower-dump phones are not reported as targets.
+  - **Timing advance and pings**: kept as device location estimates (with the carrier's confidence), apart
+    from cell sites; timing-advance reports (requested by IMSI) filed under the number whose CDR shows that
+    IMSI; not counted as data usage.
+  - KML: only the cell sites the records used; folders for location estimates and tower dumps.
+  - Fictional carrier-layout demo returns (`demo/carrier_layouts`, generator `tests/make_carrier_layouts.py`);
+    5 new self-test checks; layout, parser and isolation tests (ordinary files are never split into tables).
+  - Non-telecom returns are unchanged: identical findings, report text and figure bytes to the 1.1.0
+    figures build on the demo returns (compared after these changes).
 - Fix: the citation check failed records whose time came from separate date and time columns.
 - In telecom records, types written only as 'Text'/'SMS-MO'/'SMS-MT' are classified as communication.
 - Returns that are not telecom returns are read exactly as in 1.1.0's figures build: same records, findings,

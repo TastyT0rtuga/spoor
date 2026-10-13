@@ -14,17 +14,29 @@ FIELDS = ["ts", "date", "time", "tz", "ip", "port", "account", "action", "status
           "device", "location", "counterparty", "direction", "amount", "currency",
           # telecom (call detail records and cell-site lists)
           "orig", "term", "duration", "cell", "cell_last", "lat", "lon", "azimuth", "beamwidth",
-          "site_name", "imei", "imsi"]
+          "site_name", "imei", "imsi", "enb", "enb_last", "eci", "eci_last", "subject", "dev_lat", "dev_lon", "conf"]
 TEL_FIELDS = ("orig", "term", "duration", "cell", "cell_last", "lat", "lon", "azimuth", "beamwidth",
-              "site_name", "imei", "imsi")
+              "site_name", "imei", "imsi", "enb", "enb_last", "eci", "eci_last", "subject", "dev_lat", "dev_lon", "conf")
+CELL_ID_FIELDS = ("cell", "cell_last", "enb", "enb_last", "eci", "eci_last")
 
 
 def is_tel_mapping(m: dict) -> bool:
-    """A table is read as telecom records (CDRs or a cell-site list) only on a telecom-specific signal:
-    originating/terminating numbers, a cell/sector column, an IMSI, or an other party with a duration.
-    An IMEI, a session duration or coordinates alone (an app's login log) are not enough."""
-    return bool(m.get("orig") or m.get("term") or m.get("cell") or m.get("cell_last") or m.get("imsi")
-                or (m.get("counterparty") and m.get("duration")))
+    """A table is read as telecom records (CDRs, tower dumps, timing advance, pings or a cell-site list) only on
+    a telecom-specific signal: originating and terminating numbers, a cell / eNodeB / ECI column, an IMSI, an
+    other party with a duration, or the phone a location estimate is about. An IMEI, a session duration or
+    coordinates alone (an app's login log) are not enough."""
+    loc = (m.get("lat") and m.get("lon")) or (m.get("dev_lat") and m.get("dev_lon"))
+    return bool(m.get("orig") or m.get("term") or any(m.get(k) for k in CELL_ID_FIELDS) or m.get("imsi")
+                or (m.get("counterparty") and m.get("duration")) or (m.get("subject") and loc))
+
+
+def is_tower_mapping(m: dict) -> bool:
+    """A cell-site (tower) list: cell identities with coordinates, and nothing about calls or phones."""
+    has_id = any(m.get(k) for k in ("cell", "enb", "eci"))
+    has_loc = bool(m.get("lat") and m.get("lon")) or bool(m.get("eci"))
+    calls = any(m.get(k) for k in ("orig", "term", "counterparty", "account", "subject", "duration", "imsi", "imei",
+                                    "dev_lat", "dev_lon", "cell_last", "eci_last", "enb_last", "direction"))
+    return has_id and has_loc and not calls
 FIELD_LABELS = {
     "ts": "Timestamp", "date": "Date (separate column)", "time": "Time (separate column)",
     "tz": "Per-row timezone", "ip": "IP address", "port": "Source port", "account": "Account / user",
@@ -35,7 +47,10 @@ FIELD_LABELS = {
     "duration": "Call / session duration", "cell": "Cell / sector (first)", "cell_last": "Cell / sector (last)",
     "lat": "Cell site latitude", "lon": "Cell site longitude", "azimuth": "Sector azimuth (degrees)",
     "beamwidth": "Sector beamwidth (degrees)", "site_name": "Cell site name", "imei": "IMEI / device ID",
-    "imsi": "IMSI (SIM)",
+    "imsi": "IMSI (SIM)", "enb": "eNodeB / LTE site ID (first)", "enb_last": "eNodeB / LTE site ID (last)",
+    "eci": "Cell identity: ECI / ECGI / LTE_CI / CGI (first)", "eci_last": "Cell identity: ECI / ECGI (last)",
+    "subject": "Phone the record is about (tower dumps, pings)", "dev_lat": "Device location estimate - latitude",
+    "dev_lon": "Device location estimate - longitude", "conf": "Location confidence / uncertainty",
 }
 CATEGORIES = ["login", "login_failed", "logout", "account_change", "registration", "communication",
               "transaction", "other"]
@@ -58,7 +73,7 @@ SYN: dict[str, list[str]] = {
                 "login", "account name", "subscriber", "customer id", "customer", "target", "account identifier",
                 "screen name", "handle", "uid", "member id", "profile", "email address", "account email",
                 "user email", "principal", "gaia id", "target account", "account number", "msisdn",
-                "target number", "target msisdn", "target mdn", "mdn", "target phone", "subscriber number"],
+                "target number", "target msisdn", "target mdn", "mdn", "target phone", "subscriber number", "mtn"],
     "action": ["действие", "событие", "тип события", "операция", "action", "activity", "event", "event type", "type", "activity type", "operation",
                "description", "login type", "event name", "event description", "action type", "activity name",
                "record type", "method", "auth type", "call type", "service type", "usage type",
@@ -80,28 +95,48 @@ SYN: dict[str, list[str]] = {
     "currency": ["валюта", "currency", "asset", "coin", "ccy", "token", "symbol", "unit"],
     "orig": ["originating number", "originating", "originating party", "calling number", "calling party",
              "calling party number", "a number", "a party", "a party number", "from number", "caller", "orig number",
-             "originating msisdn", "calling msisdn", "source number"],
+             "originating msisdn", "calling msisdn", "source number", "cpn", "originatingnumber", "orig address",
+             "originating address", "calling nbr"],
     "term": ["terminating number", "terminating", "terminating party", "called number", "called party",
-             "called party number", "b number", "b party", "b party number", "to number", "dialed number",
-             "dialed digits", "term number", "terminating msisdn", "called msisdn", "destination number"],
+             "called party number", "b number", "b party", "b party number", "to number", "term number",
+             "terminating msisdn", "called msisdn", "called", "terminatingnumber", "dest address", "called nbr"],
     "duration": ["duration", "elapsed time", "call duration", "duration sec", "duration secs", "duration seconds",
-                 "duration s", "duration min", "duration mins", "duration minutes", "seizure time", "air time", "airtime",
-                 "call length", "session duration", "elapsed", "dur", "duration hh mm ss"],
+                 "duration s", "duration min", "duration mins", "duration minutes", "air time", "airtime",
+                 "call length", "session duration", "elapsed", "dur", "duration hh mm ss", "et", "sou", "minutes",
+                 "conn dur sec", "seizure duration"],
     "cell": ["first cell", "first cell site", "first cell id", "cell", "cell id", "cellid", "cell site", "cell site id",
-             "site id", "sector id", "sector", "enodeb sector", "enodeb", "enb", "enb sector", "ecgi", "cgi", "nci", "lac ci",
-             "lac cell", "tower id", "first tower", "originating cell", "start cell", "serving cell", "cell tower",
-             "first serving cell", "cell sector", "gnodeb", "first sector", "sector key"],
-    "cell_last": ["last cell", "last cell site", "last cell id", "end cell", "ending cell", "terminating cell", "last tower",
-                  "final cell", "last serving cell", "last sector"],
+             "sector id", "sector", "lac ci", "lac cell", "tower id", "first tower", "originating cell", "serving cell",
+             "cell tower", "first serving cell", "cell sector", "first sector", "1st lte sector id", "lte sector id",
+             "1st sector id", "cell face", "start sector", "sec", "celllocation", "cell location", "init sector",
+             "starting cell id", "first serving cell face", "enodeb sector", "enb sector", "sector key"],
+    "cell_last": ["last cell", "last cell site", "last cell id", "ending cell", "terminating cell", "last tower",
+                  "final cell", "last serving cell", "last sector", "last lte sector id", "end sector"],
+    "enb": ["enodeb id", "enodeb", "enb id", "enb", "e g nodeb id", "nodeb id", "1st lte site id", "lte site id",
+            "start enodeb", "nodealias", "gnodeb id", "gnodeb", "enodeb number", "starting enb number", "site enodeb"],
+    "enb_last": ["last lte site id", "end enodeb"],
+    "eci": ["lte ci", "ecgi", "e cgi", "eci", "cgi", "eutrancellfdd", "tower lac cid or ecgi", "lac cid or ecgi",
+            "cell global id", "e utran cell id", "start cell", "ncgi", "nci", "cell sector ecgi cellid"],
+    "eci_last": ["end cell", "last ecgi", "end ecgi"],
+    "subject": ["number associated w tower", "number associated with tower", "phonenumber", "phone number",
+                "mobile number", "target phone number", "phone"],
     "lat": ["latitude", "lat", "tower latitude", "site latitude", "cell latitude", "tower lat", "site lat", "lat dd",
-            "latitude dd"],
+            "latitude dd", "e 911 latitude degrees"],
     "lon": ["longitude", "long", "lon", "lng", "tower longitude", "site longitude", "cell longitude", "tower long",
-            "tower lon", "site lon", "site long", "long dd", "longitude dd"],
-    "azimuth": ["azimuth", "azm", "az", "sector azimuth", "orientation", "azimuth deg", "antenna azimuth", "bearing"],
-    "beamwidth": ["beamwidth", "beam width", "horizontal beamwidth", "hbw", "beam width deg", "antenna beamwidth"],
-    "site_name": ["site name", "tower name", "cell site name", "cell name", "sector name", "site address", "tower address"],
-    "imei": ["imei", "imeisv", "imei sv", "device imei", "meid", "esn", "imei number", "handset imei"],
-    "imsi": ["imsi", "subscriber imsi", "sim imsi", "imsi number"],
+            "tower lon", "site lon", "site long", "long dd", "longitude dd", "e 911 longitude degrees"],
+    "dev_lat": ["end latitude", "end lat", "device latitude", "estimated latitude", "location latitude", "ping latitude"],
+    "dev_lon": ["end longitude", "end long", "end lon", "device longitude", "estimated longitude", "location longitude",
+                "ping longitude"],
+    "conf": ["confidence", "conf", "uncertainty", "uncertainty radius", "accuracy", "confidence radius", "error radius",
+             "horizontal accuracy"],
+    "azimuth": ["azimuth", "azm", "az", "sector azimuth", "orientation", "azimuth deg", "antenna azimuth", "bearing",
+                "tower azimuth", "1st tower azimuth"],
+    "beamwidth": ["beamwidth", "beam width", "horizontal beamwidth", "hbw", "beam width deg", "antenna beamwidth",
+                  "antenna h bw", "horizontal bw", "h bw"],
+    "site_name": ["site name", "tower name", "cell site name", "cell name", "sector name", "site address", "tower address",
+                  "1st tower address", "street address"],
+    "imei": ["imei", "imeisv", "imei sv", "device imei", "meid", "esn", "imei number", "handset imei",
+             "imei associated w tower", "device identifier", "user equip type", "meid esn"],
+    "imsi": ["imsi", "subscriber imsi", "sim imsi", "imsi number", "imsi associated w tower"],
 }
 _NORM_RE = re.compile(r"[^0-9a-z\u0430-\u044f\u0451]+")
 _PAREN_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
@@ -138,6 +173,8 @@ _TIME_ONLY = re.compile(r"^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:\s*[AaPp]\.?[M
 _NUMERIC = re.compile(r"^[-+]?\(?\s?[$€£¥]?\s?\d[\d.,' ]*\)?\s?[$€£¥]?$")
 _UA = re.compile(r"Mozilla/|AppleWebKit|Dalvik/|CFNetwork|okhttp|Windows NT|Android \d|iPhone OS|Darwin/", re.I)
 _DECIMAL = re.compile(r"^[-+]?\d{1,3}(?:\.\d+)?$")
+_NULLISH = {"n/a", "na", "null", "none", "-", "--", "nan", "(null)", "#n/a", "0"}
+_MIDNIGHT_RE = re.compile(r"(?:^|\D)\d{4}-\d\d-\d\d(?:[ T]00:00(?::00(?:\.0+)?)?)?$|^\d{1,2}/\d{1,2}/\d{2,4}(?: 0?0:00(?::00)?(?: ?AM)?)?$")
 _STATUS_WORDS = re.compile(r"^(?:success\w*|succeeded|ok|true|false|fail\w*|denied|rejected|invalid|error|blocked|"
                            r"allowed|accepted|approved|declined|completed|pending|yes|no|pass|passed)$", re.I)
 
@@ -152,9 +189,15 @@ def value_evidence(values: list) -> dict[str, float]:
     p2 = TsParser(TzSpec("UTC", assumed=True), date_order="DMY", column_mode=False)
     pe = TsParser(TzSpec("UTC", assumed=True), column_mode=True)
     ev = {k: 0.0 for k in ("ip", "ts", "ts_epoch", "date_only", "time_only", "ua", "email", "numeric",
-                          "status", "port", "ip_port", "phone", "lat", "lon", "deg")}
+                          "status", "port", "ip_port", "phone", "lat", "lon", "deg", "nullish", "midnight")}
     for v in vals:
         s = str(v).strip()
+        if s.lower() in _NULLISH:
+            ev["nullish"] += 1
+        if hasattr(v, "hour") and hasattr(v, "year") and (v.hour, v.minute, v.second) == (0, 0, 0):
+            ev["midnight"] += 1
+        elif _MIDNIGHT_RE.search(s):
+            ev["midnight"] += 1
         sp = split_ip_port(s) if len(s) <= 60 else None
         if sp:
             ev["ip"] += 1
@@ -231,12 +274,21 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
             elif f == "amount":
                 s = s if e.get("numeric", 0) >= 0.8 else 0
             elif f in ("action", "device", "location", "counterparty", "direction", "currency", "tz",
-                       "orig", "term", "duration", "imei", "imsi", "site_name"):
+                       "orig", "term", "duration", "imei", "imsi", "site_name", "subject", "conf"):
                 if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5:
                     s = 0
+                if f in ("orig", "term", "subject", "imei", "imsi") and e.get("nullish", 0) >= 0.95:
+                    s = 0
+            elif f in ("enb", "enb_last", "eci", "eci_last"):
+                if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5 or e.get("nullish", 0) >= 0.95:
+                    s = 0
+            elif f in ("dev_lat", "dev_lon"):
+                s = s if e.get(f[4:], 0) >= 0.8 else 0
             elif f in ("cell", "cell_last"):
                 if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5 or e.get("phone", 0) >= 0.8 or e.get("email", 0) > 0.5:
                     s = 0       # a column named 'Cell' holding phone numbers is a mobile number, not a cell site
+                elif e.get("nullish", 0) >= 0.95:
+                    s = 0       # a cell column that is 'N/A' on every row (the cell is in another column)
             elif f in ("lat", "lon"):
                 s = s if e.get(f, 0) >= 0.8 else 0
             elif f in ("azimuth", "beamwidth"):
@@ -245,9 +297,10 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
     mapping: dict[str, str] = {}
     notes: list[str] = []
     used: set[str] = set()
-    order = ["ip", "ts", "date", "time", "user_agent", "orig", "term", "account", "action", "status", "port",
-             "cell_last", "cell", "lat", "lon", "azimuth", "beamwidth", "site_name", "duration", "imei", "imsi",
-             "counterparty", "amount", "currency", "device", "location", "direction", "tz"]
+    order = ["ip", "ts", "date", "time", "user_agent", "orig", "term", "subject", "account", "action", "status", "port",
+             "eci_last", "eci", "enb_last", "enb", "cell_last", "cell", "dev_lat", "dev_lon", "lat", "lon", "azimuth",
+             "beamwidth", "site_name", "duration", "imei", "imsi", "conf", "counterparty", "amount", "currency", "device",
+             "location", "direction", "tz"]
     for f in order:
         cands = sorted(((s, h) for h, s in scores[f].items() if h not in used and s >= 1.5),
                        key=lambda t: (-t[0], headers.index(t[1])))
@@ -290,14 +343,18 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
         notes.append(f"{f} column ignored: latitude and longitude must both be present")
     if not is_tel_mapping(mapping):
         # not a telecom table: read it exactly as before telecom support existed
-        for f in ("duration", "lat", "lon", "azimuth", "beamwidth", "site_name", "imei"):
+        for f in ("duration", "lat", "lon", "azimuth", "beamwidth", "site_name", "imei", "subject", "dev_lat",
+                  "dev_lon", "conf"):
             h = mapping.pop(f, None)
             if h is None:
                 continue
             notes = [n for n in notes if not n.startswith(f + " = ")]
             if f == "imei" and "device" not in mapping:
                 mapping["device"] = h
-                notes.append(f"device = column '{h}' (IMEI)")
+                notes.append(f"device = column '{h}' (header name)")
+    if is_tel_mapping(mapping):
+        notes = _telecom_post(mapping, notes, headers, ev, samples)
+    notes = split_date_time(mapping, notes, headers, ev)
     if "ts" not in mapping and ("date" in mapping) != ("time" in mapping):
         # a lone date column is still a (date-only) timestamp
         if "date" in mapping:
@@ -311,6 +368,84 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
     if "ip" not in mapping:
         notes.append("no IP column found - IPs are still extracted from every cell as identifiers")
     return mapping, notes
+
+
+def _drop(mapping: dict, notes: list, fields, why: str) -> list:
+    for f in fields:
+        if f in mapping:
+            h = mapping.pop(f)
+            notes = [n for n in notes if not n.startswith(f + " = ")]
+            notes.append(f"{f}: column '{h}' not used ({why})")
+    return notes
+
+
+def _telecom_post(mapping: dict, notes: list, headers: list, ev: dict, samples: dict) -> list:
+    """Telecom-only adjustments (other tables are never affected)."""
+    used = set(mapping.values())
+    if is_tower_mapping(mapping):
+        notes = _drop(mapping, notes, ("ts", "date", "time", "tz", "action", "status", "amount", "currency", "ip", "port"),
+                      "a cell-site list: its dates describe the list, not events")
+        notes.append("read as a cell-site (tower) list")
+        return notes
+    # location estimates (pings, timing advance) are positions of the device, not of a cell site
+    calls = any(mapping.get(k) for k in ("orig", "term", "counterparty", "duration"))
+    if mapping.get("lat") and mapping.get("lon") and not any(mapping.get(k) for k in CELL_ID_FIELDS) \
+            and not mapping.get("dev_lat") and not calls:
+        mapping["dev_lat"], mapping["dev_lon"] = mapping.pop("lat"), mapping.pop("lon")
+        notes = [n for n in notes if not n.startswith(("lat = ", "lon = "))]
+        notes.append(f"dev_lat/dev_lon = columns '{mapping['dev_lat']}'/'{mapping['dev_lon']}' (no cell column: "
+                     "the coordinates are a location estimate for the device, not a cell site)")
+    # carriers that give the time twice (local and GMT/UTC): use the UTC one
+    ts = mapping.get("ts")
+    if ts and not re.search(r"gmt|utc|zulu", ts, re.I):
+        for h in headers:
+            if h not in used and re.search(r"gmt|utc|zulu", h, re.I) and ev.get(h, {}).get("ts", 0) >= 0.8:
+                mapping["ts"] = h
+                notes = [n for n in notes if not n.startswith("ts = ")]
+                notes.append(f"ts = column '{h}' (the carrier also gives '{ts}'; the column labelled UTC/GMT is used)")
+                break
+    return notes
+
+
+def split_date_time(mapping: dict, notes: list, headers: list, ev: dict) -> list:
+    """A timestamp column that is midnight on every row, next to a column named 'time': the date comes from the
+    first and the time of day from the second (some carriers' spreadsheets store the time with a dummy date)."""
+    ts = mapping.get("ts")
+    if not ts or ev.get(ts, {}).get("midnight", 0) < 0.95:
+        return notes
+    used = set(mapping.values())
+    for h in headers:
+        if h in used or h == ts:
+            continue
+        words = set(norm_header(h).split()) | set(re.sub(r"[^a-z]+", " ", str(h).lower()).split())
+        e = ev.get(h, {})
+        if "time" in words and "date" not in words and (e.get("time_only", 0) >= 0.8 or
+                                                        (e.get("ts", 0) >= 0.8 and e.get("midnight", 0) < 0.5)):
+            mapping["date"], mapping["time"] = mapping.pop("ts"), h
+            notes = [n for n in notes if not n.startswith("ts = ")]
+            notes.append(f"date = column '{ts}' and time = column '{h}' ('{ts}' is midnight on every row; the time of day "
+                         f"is taken from '{h}')")
+            break
+    return notes
+
+
+_FN_PHONE = re.compile(r"(?<!\d)(\+?1?[2-9]\d{2}[2-9]\d{6})(?!\d)")
+_FN_IMSI = re.compile(r"(?i)timingadvance_+(\d{14,15})(?!\d)")
+
+
+def target_from_filename(name: str) -> tuple:
+    """Carriers name call-record files after the target: 'CDR_Mediations_<number>_<id>.xls',
+    'CellSites-CDR_..._<number>_<dates>.csv', '<case>_CXM_HDA_volte_<number>_<dates>.xlsx' - and timing-advance
+    reports after the IMSI ('TimingAdvance_<IMSI>_<dates>'). Used only for a telecom file that names no target
+    in its preamble or columns, and only when the name holds exactly one such number."""
+    m = _FN_IMSI.search(name)
+    if m:
+        return m.group(1), f"file name '{name}' (timing-advance reports are named after the IMSI) - VERIFY"
+    nums = {x for x in _FN_PHONE.findall(name.replace(" ", "_"))}
+    norm = {phone_from_cell(x) for x in nums} - {None}
+    if len(norm) == 1:
+        return norm.pop(), f"file name '{name}' (carriers name call-record files after the target number) - VERIFY"
+    return None, ""
 
 
 # ---------------------------------------------------------------- categorisation
@@ -411,10 +546,16 @@ def default_account_from(texts: list[tuple[str, str]]) -> tuple[str | None, str]
     lab = re.compile(r"(?:^|\b)(?:account|target|subscriber|user ?name|user|e-?mail|account id|uid|screen name|handle|login|"
                      r"логин|аккаунт|пользователь)\s*(?:identifier|id|name)?\s*[:=#]\s*(.+)$", re.I)
     # telecom returns name the target number ("Target Number: 7035550101", "MSISDN: ...")
-    tel_lab = re.compile(r"(?:^|\b)(?:target\s*(?:number|no\.?|phone|phone number|telephone number|msisdn|mdn)|msisdn|mdn)"
-                         r"\s*[:=#]\s*(.+)$", re.I)
+    tel_lab = re.compile(r"(?:^|\b)(?:target\s*(?:number|no\.?|phone|phone number|telephone number|msisdn|mdn)|msisdn|mdn|"
+                         r"(?:voice|data|sms|text|messaging)\s+usage\s+for)\s*[:=#]\s*(.+)$", re.I)
     for cite, t in texts:
-        m = lab.search(t.strip()) or tel_lab.search(t.strip())
+        mt = tel_lab.search(t.strip())
+        if mt:
+            raw = mt.group(1).strip().split("  ")[0].strip()
+            ph = phone_from_cell(raw.replace(" ", ""))
+            if ph:
+                return ph, f"'{t.strip()[:80]}' ({cite})"
+        m = lab.search(t.strip()) or mt
         if m:
             v = re.split(r"[,;|()\[\]<>]", m.group(1).strip())[0].strip().strip("'\"")
             if v and " " not in v and len(v) >= 3:

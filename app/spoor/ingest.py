@@ -13,8 +13,8 @@ from . import db as dbm
 from . import readers
 from .identifiers import EMAIL_RE, extract as extract_ids, phone_from_cell
 from .ipaddr import classify, find_ips, split_ip_port, subnet_key
-from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, is_tel_mapping, propose_mapping,
-                      suggest_default_category)
+from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, is_tel_mapping, is_tower_mapping,
+                      propose_mapping, suggest_default_category, target_from_filename)
 from .timeparse import TsParser, TzSpec, fmt_utc, infer_date_order, suggest_source_tz
 from .util import sha256_file, utc_now_str
 
@@ -144,6 +144,11 @@ def build_config(scan: dict, src: dict, params: dict) -> dict:
         if m:
             acct, abasis = m.group(1), f"file name '{name}'"
     has_account_col = any(t.get("mapping", {}).get("account") for t in cfg["tables"])
+    tel_file = any(is_tel_mapping(t.get("mapping") or {}) and not is_tower_mapping(t.get("mapping") or {})
+                   for t in cfg["tables"])
+    if not acct and tel_file and not has_account_col \
+            and not any((t.get("mapping") or {}).get("subject") for t in cfg["tables"]):
+        acct, abasis = target_from_filename(name)
     cfg["default_account"] = acct or ""
     cfg["default_account_basis"] = abasis if acct else ""
     if acct and has_account_col:
@@ -319,13 +324,20 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
             extra["_tel"] = tel
             if mapping.get("duration"):
                 extra["_tel_duration_header"] = mapping["duration"]
+            if is_tower_mapping(mapping):
+                extra["_tel_kind"] = "towerlist"
+            hint = {k: mapping[k] for k in ("cell", "eci") if mapping.get(k)}
+            if hint:
+                extra["_tel_hdr"] = hint
+            if tmeta.get("section"):
+                extra["_section"] = tmeta["section"][:300]
         for fld in ("account", "counterparty"):
             v = f.get(fld)
             if v not in (None, ""):
                 ph = phone_from_cell(_txt(v) or "")
                 if ph:
                     phone_cells.append((_txt(v), ph))
-        for fld in ("orig", "term"):
+        for fld in ("orig", "term", "subject"):
             v = tel.get(fld)
             if v:
                 ph = phone_from_cell(v)
@@ -395,6 +407,9 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     # account
     acct = _txt(f.get("account"), 300)
     abasis = None
+    tel_ = extra.get("_tel") or {}
+    if not acct and tel_.get("subject"):
+        acct, abasis = tel_["subject"], "phone the record is about (column '" + str(mapping.get("subject")) + "')"
     if not acct and ctx.default_account:
         acct, abasis = ctx.default_account, "source default"
     if acct and EMAIL_RE.fullmatch(acct):

@@ -34,7 +34,12 @@ def read_head_lines(path, enc: Optional[str] = None, max_bytes: int = 512 * 1024
         lines = text.splitlines(keepends=True)[:max_lines]
         return enc, lines
     lines = []
-    for i, b in enumerate(head.splitlines(keepends=True)):
+    # split on \n only, as the record reader does: a bare \r inside a quoted cell is not a line break
+    # (files that use \r alone as the line ending are split on it as before)
+    parts = head.split(b"\n") if b"\n" in head else head.splitlines(keepends=True)
+    if b"\n" in head:
+        parts = [x + b"\n" for x in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+    for i, b in enumerate(parts):
         if i >= max_lines:
             break
         lines.append(_decode(b, enc, i == 0))
@@ -112,10 +117,148 @@ def _dedupe(headers: list[str]) -> list[str]:
     return out
 
 
+BLOCK_SCAN_BYTES = 64 * 1024 * 1024
+
+
+def _nonempty(cells: list[str]) -> list[str]:
+    return [c.strip() for c in cells if c and c.strip()]
+
+
+def _strict_header(vals: list[str]) -> bool:
+    for v in vals:
+        if split_ip_port(v) or looks_like_timestamp(v):
+            return False
+        if v.replace(".", "", 1).replace(",", "").lstrip("-+").isdigit():
+            return False
+    return _is_headerish(vals)
+
+
+def find_blocks(path, enc: str, d: str) -> list[dict]:
+    """Header rows that each start a table of their own - a carrier report text file holding a voice table and
+    a data table, or a tower-dump file with one section per search. A header row has 4+ named columns, is
+    headerish, and the next non-empty line is a data row (at least half as many filled cells, not headerish).
+    Free lines between tables are kept as that table's section labels. Returns [] unless there are 2+ headers,
+    so ordinary single-table files are read exactly as before. Reads at most BLOCK_SCAN_BYTES."""
+    if enc.startswith("utf-16"):
+        return []
+    heads: list[dict] = []
+    labels: list[tuple[int, str]] = []
+    pending = None            # a header candidate waiting for the next line
+    seen_rows = False         # any table-like row seen yet
+    prev_label = False        # the previous non-empty line was a label (one filled cell)
+    read = 0
+    with open(path, "rb") as f:
+        for i, b in enumerate(f, 1):
+            read += len(b)
+            if read > BLOCK_SCAN_BYTES:
+                break
+            s_ = _decode(b, enc, i == 1).rstrip("\r\n")
+            if not s_.strip():
+                continue
+            try:
+                cells = next(csv.reader([s_], delimiter=d))
+            except (csv.Error, StopIteration):
+                cells = [s_]
+            ne = _nonempty(cells)
+            if pending is not None:
+                if len(ne) >= max(2, len(pending["n"]) // 2) and not _is_headerish(ne):
+                    heads.append({"line": pending["line"], "headers": pending["headers"], "labels": pending["labels"]})
+                pending = None
+            # a header row: 4+ named cells, none of them a number, date or IP; a table after the first one must
+            # follow a label line ('Data Usage For: ...', 'Search Criteria ...') or repeat the first header -
+            # so a data row that happens to look like words is never taken for a new table
+            starts_ok = not seen_rows or prev_label or (heads and [c.strip() for c in cells][: len(heads[0]["headers"])]
+                                                        == heads[0]["headers"])
+            if len(ne) >= 4 and starts_ok and _strict_header(ne):
+                hdr = [c.strip() for c in cells]
+                last = max(k for k, c in enumerate(hdr) if c) + 1
+                pending = {"line": i, "headers": hdr[:last], "n": ne, "labels": labels[-4:]}
+                labels = []
+                prev_label = False
+            elif len(ne) <= 1:
+                labels.append((i, s_.strip()))
+                prev_label = True
+            else:
+                labels = []
+                seen_rows = True
+                prev_label = False
+    return heads if len(heads) >= 2 else []
+
+
+def _block_name(labels: list[tuple[int, str]], k: int, used: set) -> str:
+    import re as _re
+    base = ""
+    for _ln, t in reversed(labels):           # the label nearest the header names the table
+        t = _re.sub(r"\s+", " ", t).strip(" -:")
+        if t and len(t) <= 80 and not t.lower().startswith(("date range", "page ")):
+            base = t
+            break
+    base = base or f"table {k + 1}"
+    name, n = base, 1
+    while name in used:
+        n += 1
+        name = f"{base} ({n})"
+    used.add(name)
+    return name
+
+
+def _scan_blocks(path, name: str, enc: str, d: str, blocks: list[dict], lines: list[str], out: dict) -> dict:
+    out["kind"] = "delimited"
+    used: set = set()
+    tables = []
+    for k, b in enumerate(blocks):
+        nxt = blocks[k + 1] if k + 1 < len(blocks) else None
+        end = (nxt["labels"][0][0] if nxt and nxt["labels"] else nxt["line"]) if nxt else None
+        headers = _dedupe(b["headers"])
+        tables.append({"name": _block_name(b["labels"], k, used), "mode": "table", "delimiter": d,
+                       "header_line": b["line"], "data_start_line": b["line"] + 1, "end_line": end,
+                       "headers": headers, "ncols": len(headers), "samples": [], "header_cite": f"L{b['line']}",
+                       "section": " | ".join(t for _l, t in b["labels"] if len(t) <= 100 and ":" in t)})
+    # samples: up to 200 rows per table
+    with open(path, "rb") as f:
+        ti = 0
+        for i, bl in enumerate(f, 1):
+            while ti < len(tables) and tables[ti]["end_line"] is not None and i >= tables[ti]["end_line"]:
+                ti += 1
+            if ti >= len(tables):
+                break
+            t = tables[ti]
+            if i < t["data_start_line"] or len(t["samples"]) >= 200:
+                if all(len(x["samples"]) >= 200 for x in tables):
+                    break
+                continue
+            s_ = _decode(bl, enc, i == 1).rstrip("\r\n")
+            if not s_.strip():
+                continue
+            try:
+                r = next(csv.reader([s_], delimiter=d))
+            except csv.Error:
+                continue
+            if len(r) > t["ncols"] and not any(c.strip() for c in r[t["ncols"]:]):
+                r = r[: t["ncols"]]
+            if len(r) == t["ncols"]:
+                t["samples"].append(r)
+    first = blocks[0]["line"]
+    pre = [(f"L{i + 1}", lines[i].strip()) for i in range(min(first - 1, 60)) if i < len(lines) and lines[i].strip()]
+    for b in blocks[1:]:
+        pre += [(f"L{ln}", t) for ln, t in b["labels"]]
+    out["preamble"] = pre
+    out["tables"] = tables
+    out["notes"].append(f"{DELIM_NAMES[d]}-delimited, {len(tables)} tables in one file: "
+                        + "; ".join(f"'{t['name']}' ({t['ncols']} columns, header at line {t['header_line']})" for t in tables))
+    return out
+
+
 def scan(path, name: str) -> dict:
     enc, lines = read_head_lines(path)
     t = sniff_table(lines)
     out = {"kind": "text", "encoding": enc, "tables": [], "preamble": [], "notes": []}
+    order = ([t["delimiter"]] if t else []) + [x for x in DELIMS if not t or x != t["delimiter"]]
+    for d in order:
+        if sum(1 for l in lines[:400] if d in l) >= 3:
+            blocks = find_blocks(path, enc, d)
+            if blocks:
+                return _scan_blocks(path, name, enc, d, blocks, lines, out)
     if t:
         hl = t["header_line"] or t["data_start_line"]
         pre_end = (t["header_line"] or t["data_start_line"]) - 1
@@ -224,7 +367,11 @@ def iterate(path, cfg: dict, table: dict, resume: Optional[dict] = None) -> Iter
                     return
             feeder.take()
         reader = csv.reader(feeder, delimiter=d)
+        end_line = table.get("end_line")
+        hdr_cmp = [h.strip() for h in table.get("headers") or []] if table.get("header_line") else None
         while True:
+            if end_line is not None and feeder.line + 1 >= end_line:
+                break
             try:
                 row = next(reader)
             except StopIteration:
@@ -236,6 +383,8 @@ def iterate(path, cfg: dict, table: dict, resume: Optional[dict] = None) -> Iter
             raw_s = raw.rstrip("\r\n")
             if row is not None and len(row) == 0 or not raw_s.strip():
                 continue
+            if hdr_cmp and row is not None and [c.strip() for c in row[: len(hdr_cmp)]] == hdr_cmp:
+                continue          # the header repeated inside the data (paged exports): not a record
             ck = {"line": l2, "offset": off + ln, "rows": rows + 1}
             if row is not None and len(row) != ncols and len(row) > ncols and not any(c.strip() for c in row[ncols:]):
                 row = row[:ncols]

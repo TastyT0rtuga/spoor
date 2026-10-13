@@ -176,13 +176,13 @@ CREATE TABLE IF NOT EXISTS figures (
 );
 CREATE TABLE IF NOT EXISTS tel (
   event_id INTEGER PRIMARY KEY, source_id INTEGER, target TEXT, target_basis TEXT, other TEXT, other_raw TEXT,
-  dir TEXT, kind TEXT, ts_epoch REAL, ts_utc TEXT, duration_s REAL, cell TEXT, cell_last TEXT,
+  dir TEXT, kind TEXT, ts_epoch REAL, ts_utc TEXT, duration_s REAL, cell TEXT, cell_last TEXT, eci INTEGER, enb INTEGER,
   lat REAL, lon REAL, azimuth REAL, beamwidth REAL, site_name TEXT, loc_basis TEXT, loc_event_id INTEGER,
-  imei TEXT, imsi TEXT, note TEXT
+  imei TEXT, imsi TEXT, dev_lat REAL, dev_lon REAL, dev_conf TEXT, src_kind TEXT, section TEXT, note TEXT
 );
 CREATE TABLE IF NOT EXISTS cell_sites (
   id INTEGER PRIMARY KEY, cell TEXT, source_id INTEGER, event_id INTEGER, origin TEXT, site_name TEXT,
-  lat REAL, lon REAL, azimuth REAL, beamwidth REAL
+  lat REAL, lon REAL, azimuth REAL, beamwidth REAL, eci INTEGER, enb INTEGER
 );
 CREATE TABLE IF NOT EXISTS figure_refs (figure_no INTEGER, ord INTEGER, marker TEXT, fid TEXT, shows TEXT, cite TEXT);
 
@@ -203,10 +203,15 @@ CREATE VIEW IF NOT EXISTS src AS
   SELECT label AS source, display AS file, kind, sha256, rows FROM sources WHERE status = 'ingested';
 CREATE VIEW IF NOT EXISTS calls AS
   SELECT t.event_id AS id, s.label || ':' || e.loc AS cite, s.label AS source, t.ts_utc, t.target, t.other, t.dir,
-         t.kind, t.duration_s, t.cell, t.cell_last, t.lat, t.lon, t.azimuth, t.site_name, t.loc_basis,
+         t.kind, t.duration_s, t.cell, t.cell_last, t.eci, t.lat, t.lon, t.azimuth, t.site_name, t.loc_basis,
          (SELECT s2.label || ':' || e2.loc FROM events e2 JOIN sources s2 ON s2.id = e2.source_id
-           WHERE e2.id = t.loc_event_id) AS loc_cite, t.imei, t.imsi, e.raw
+           WHERE e2.id = t.loc_event_id) AS loc_cite, t.imei, t.imsi, t.dev_lat, t.dev_lon, t.dev_conf, t.src_kind,
+         t.section, e.raw
   FROM tel t JOIN events e ON e.id = t.event_id JOIN sources s ON s.id = t.source_id;
+CREATE VIEW IF NOT EXISTS tcore AS
+  SELECT * FROM tel WHERE COALESCE(src_kind, 'cdr') != 'dump' AND COALESCE(dir, '') != 'fwd';
+CREATE VIEW IF NOT EXISTS ccore AS
+  SELECT * FROM calls WHERE COALESCE(src_kind, 'cdr') != 'dump' AND COALESCE(dir, '') != 'fwd';
 CREATE VIEW IF NOT EXISTS fnd AS
   SELECT fid, category, title, statement FROM findings WHERE fid IS NOT NULL;
 """
@@ -224,6 +229,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_tel_other ON tel(other)",
     "CREATE INDEX IF NOT EXISTS ix_tel_ts ON tel(ts_epoch)",
     "CREATE INDEX IF NOT EXISTS ix_cs_cell ON cell_sites(cell)",
+    "CREATE INDEX IF NOT EXISTS ix_cs_eci ON cell_sites(eci)",
+    "CREATE INDEX IF NOT EXISTS ix_tel_imsi ON tel(imsi)",
 ]
 SOURCE_INDEXES = ["CREATE INDEX IF NOT EXISTS ix_ev_source ON events(source_id, seq)",
                   "CREATE INDEX IF NOT EXISTS ix_id_event ON identifiers(event_id)"]
@@ -244,15 +251,17 @@ def connect(path, readonly: bool = False) -> sqlite3.Connection:
     return con
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def init(con: sqlite3.Connection) -> None:
     con.executescript(SCHEMA)
     r = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if not r or r[0] != str(SCHEMA_VERSION):
-        for v in ("ev", "ids", "src", "fnd", "calls"):
+        for v in ("ev", "ids", "src", "fnd", "calls", "tcore", "ccore"):
             con.execute(f"DROP VIEW IF EXISTS {v}")
+        for t in ("tel", "cell_sites"):          # derived on every run; rebuilt with the new columns
+            con.execute(f"DROP TABLE IF EXISTS {t}")
         con.executescript(SCHEMA)
         con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     for ix in SOURCE_INDEXES:

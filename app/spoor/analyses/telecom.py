@@ -29,7 +29,7 @@ class Telecom(Analysis):
         if not (self.one("SELECT COUNT(*) FROM tel") or 0):
             return
         self.targets = [r["target"] for r in self.q(
-            "SELECT target, COUNT(*) AS n FROM tel WHERE target IS NOT NULL GROUP BY target ORDER BY n DESC, target")]
+            "SELECT target, COUNT(*) AS n FROM tcore WHERE target IS NOT NULL GROUP BY target ORDER BY n DESC, target")]
         self.tset = set(self.targets)
         self.msg("data quality")
         self.quality()
@@ -43,20 +43,22 @@ class Telecom(Analysis):
         self.devices()
         self.msg("co-location")
         self.colocation()
+        self.msg("tower dumps")
+        self.dumps()
         self.msg("telecom exports and KML")
         self.exports()
 
     # ------------------------------------------------------------ helpers
     def tcount(self, where: str, args=()) -> int:
-        return self.one(f"SELECT COUNT(*) FROM tel WHERE {where}", args) or 0
+        return self.one(f"SELECT COUNT(*) FROM tcore WHERE {where}", args) or 0
 
     def first_last(self, where: str, args=()):
-        f = self.one(f"SELECT event_id FROM tel WHERE {where} ORDER BY ts_epoch IS NULL, ts_epoch, event_id LIMIT 1", args)
-        l = self.one(f"SELECT event_id FROM tel WHERE {where} ORDER BY ts_epoch IS NULL, ts_epoch DESC, event_id DESC LIMIT 1", args)
+        f = self.one(f"SELECT event_id FROM tcore WHERE {where} ORDER BY ts_epoch IS NULL, ts_epoch, event_id LIMIT 1", args)
+        l = self.one(f"SELECT event_id FROM tcore WHERE {where} ORDER BY ts_epoch IS NULL, ts_epoch DESC, event_id DESC LIMIT 1", args)
         return f, l
 
     def tel_sample(self, where: str, args=(), n=None):
-        ids = [r[0] for r in self.con.execute(f"SELECT event_id FROM tel WHERE {where} ORDER BY ts_epoch IS NULL, ts_epoch, event_id", args)]
+        ids = [r[0] for r in self.con.execute(f"SELECT event_id FROM tcore WHERE {where} ORDER BY ts_epoch IS NULL, ts_epoch, event_id", args)]
         n = n or self.nsamp
         if len(ids) <= n:
             pick = ids
@@ -73,8 +75,9 @@ class Telecom(Analysis):
         unl = st.get("unlocated", 0)
         reasons = st.get("unlocated_reasons") or {}
         inferred = st.get("inferred_targets") or {}
-        bits = [f"{plural(n, 'call/text/data record')} read from telecom returns for {plural(len(self.targets), 'target number')}"
-                f" ({', '.join(self.targets[:12])}{' ...' if len(self.targets) > 12 else ''})."]
+        bits = [f"{plural(n, 'telecom record')} read" + (
+            f" for {plural(len(self.targets), 'target')} ({', '.join(self.targets[:12])}{' ...' if len(self.targets) > 12 else ''})."
+            if self.targets else " (tower dumps only - no target numbers).")]
         bits.append(f"{plural(loc, 'record')} have cell-site coordinates" + (f"; {plural(unl, 'record')} do not ("
                     + "; ".join(f"{k}: {fmt_num(v)}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])) + ")" if unl else "") + ".")
         if st.get("tower_rows"):
@@ -89,14 +92,47 @@ class Telecom(Analysis):
         if st.get("no_target"):
             bits.append(f"{plural(st['no_target'], 'record')} have no target number; set the account or default account for that source.")
         if st.get("neither_end_target"):
-            bits.append(f"{plural(st['neither_end_target'], 'record')} name two numbers, neither of them the target.")
-        prio = 1 if (inferred or st.get("conflicts") or st.get("no_target")) else 2
+            bits.append(f"{plural(st['neither_end_target'], 'record')} of a target's line name two other numbers (typically a "
+                        f"call forwarded by the target's line, e.g. to voicemail); they are kept without a direction.")
+        fn = st.get("filename_targets") or {}
+        for lab, v in sorted(fn.items()):
+            bits.append(f"Source {lab}: target {v['target']} taken from the file name (carriers name call-record files after "
+                        f"the target) - verify against the return.")
+        for imsi, v in sorted((st.get("imsi_targets") or {}).items()):
+            if v.get("number"):
+                bits.append(f"Records requested by IMSI {imsi} are filed under {v['number']}: that IMSI appears in "
+                            f"{plural(v['records'], 'call record')} of {v['number']} ({self.cite(v['event_id'])}).")
+            else:
+                bits.append(f"IMSI {imsi} appears with several numbers ({', '.join(v.get('candidates') or [])}); its records "
+                            f"are kept under the IMSI.")
+        if st.get("imei_sci") or st.get("imsi_sci"):
+            bits.append(f"{plural(st.get('imei_sci', 0) + st.get('imsi_sci', 0), 'IMEI/IMSI value')} are in scientific notation "
+                        f"(e.g. 3.5E+14): a spreadsheet damaged them before they reached Spoor, so they are not used - "
+                        f"use the carrier's original file.")
+        if st.get("fwd_legs"):
+            bits.append(f"{plural(st['fwd_legs'], 'forwarded-call leg')} (e.g. Verizon 'MF') duplicate another record of the "
+                        f"same call; they are in the export but not counted as contacts.")
+        if st.get("multi_cell"):
+            bits.append(f"{plural(st['multi_cell'], 'record')} list several cells (AT&T CellLocation); the first listed is used.")
+        sk = st.get("src_kinds") or {}
+        if sk.get("ta") or sk.get("ping"):
+            bits.append(f"{plural(sk.get('ta', 0) + sk.get('ping', 0), 'location estimate')} (timing advance: "
+                        f"{fmt_num(sk.get('ta', 0))}, pings: {fmt_num(sk.get('ping', 0))}) carry the carrier's estimate of "
+                        f"the device position; they are drawn separately from cell sites.")
+        dsrc = st.get("dump_sources") or {}
+        if dsrc:
+            bits.append(f"{plural(sk.get('dump', 0), 'record')} come from tower dumps ({', '.join(sorted(dsrc))}): they are about "
+                        f"every phone on the dumped towers and are reported in the tower-dump findings, not as targets.")
+        prio = 1 if (inferred or st.get("conflicts") or st.get("no_target") or fn or st.get("imei_sci")) else 2
         self.add("telecom_quality", "Telecom records: how they were read", " ".join(bits),
                  {"values": {"records": n, "targets": self.targets[:50], "target_count": len(self.targets), "located": loc,
                              "unlocated": unl, "unlocated_reasons": reasons, "tower_rows": st.get("tower_rows", 0),
                              "cross_folder_matches": st.get("cross_folder_matches", 0),
                              "inferred_targets": inferred, "no_target": st.get("no_target", 0),
-                             "neither_end_target": st.get("neither_end_target", 0)},
+                             "neither_end_target": st.get("neither_end_target", 0), "filename_targets": fn,
+                             "imsi_targets": st.get("imsi_targets") or {}, "imei_sci": st.get("imei_sci", 0),
+                             "fwd_legs": st.get("fwd_legs", 0), "src_kinds": sk, "dump_sources": dsrc,
+                             "eci_forms": st.get("eci_forms") or {}},
                   "tables": [{"title": "Cell IDs with conflicting coordinates", "columns": ["cell", "coordinates"],
                               "rows": [[c["cell"], "; ".join(c["coordinates"])] for c in st.get("conflicts", [])[: self.trows]],
                               "total_rows": len(st.get("conflicts", []))}] if st.get("conflicts") else []},
@@ -112,21 +148,27 @@ class Telecom(Analysis):
     def profiles(self):
         ntop = int(self.p.get("tel_top_contacts", 10))
         for t in self.targets[: self.max]:
-            agg = self.q("SELECT COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms')) AS s, SUM(kind='data') AS d, "
+            # usage counts come from call/text/data records; timing-advance and ping reports are location estimates
+            agg = self.q("SELECT COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms','rcs')) AS s, SUM(kind='data') AS d, "
                          "SUM(dir='out') AS o, SUM(dir='in') AS i, COUNT(DISTINCT other) AS c, MIN(ts_utc) AS f, MAX(ts_utc) AS l, "
                          "SUM(CASE WHEN kind='voice' THEN duration_s END) AS secs, COUNT(DISTINCT cell) AS cells, "
-                         "COUNT(DISTINCT source_id) AS srcs FROM tel WHERE target=?", (t,))[0]
-            top = self.q("SELECT other, COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms')) AS s, "
+                         "COUNT(DISTINCT source_id) AS srcs FROM tcore WHERE target=? AND src_kind='cdr'", (t,))[0]
+            est = {k: n for k, n in self.con.execute("SELECT src_kind, COUNT(*) FROM tcore WHERE target=? AND src_kind IN ('ta','ping') "
+                                                     "GROUP BY src_kind", (t,))}
+            top = self.q("SELECT other, COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms','rcs')) AS s, "
                          "SUM(CASE WHEN kind='voice' THEN duration_s END) AS secs, SUM(dir='out') AS o, SUM(dir='in') AS i, "
-                         "MIN(ts_utc) AS f, MAX(ts_utc) AS l FROM tel WHERE target=? AND other IS NOT NULL "
+                         "MIN(ts_utc) AS f, MAX(ts_utc) AS l FROM tcore WHERE target=? AND other IS NOT NULL "
                          "GROUP BY other ORDER BY n DESC, other LIMIT ?", (t, max(ntop, self.trows)))
-            imeis = [r[0] for r in self.con.execute("SELECT DISTINCT imei FROM tel WHERE target=? AND imei IS NOT NULL ORDER BY 1", (t,))]
-            imsis = [r[0] for r in self.con.execute("SELECT DISTINCT imsi FROM tel WHERE target=? AND imsi IS NOT NULL ORDER BY 1", (t,))]
-            srcs = self.labels(r[0] for r in self.con.execute("SELECT DISTINCT source_id FROM tel WHERE target=?", (t,)))
+            imeis = [r[0] for r in self.con.execute("SELECT DISTINCT imei FROM tcore WHERE target=? AND imei IS NOT NULL ORDER BY 1", (t,))]
+            imsis = [r[0] for r in self.con.execute("SELECT DISTINCT imsi FROM tcore WHERE target=? AND imsi IS NOT NULL ORDER BY 1", (t,))]
+            srcs = self.labels(r[0] for r in self.con.execute("SELECT DISTINCT source_id FROM tcore WHERE target=?", (t,)))
             stmt = (f"Target {t} ({srcs}): {plural(agg['n'], 'record')} from {T(agg['f'])} to {T(agg['l'])} - "
                     f"{plural(agg['v'] or 0, 'call')} ({_minutes(agg['secs'])} minutes), {plural(agg['s'] or 0, 'text')}, "
                     f"{plural(agg['d'] or 0, 'data session')}; {fmt_num(agg['o'] or 0)} outgoing and {fmt_num(agg['i'] or 0)} incoming; "
                     f"{plural(agg['c'], 'distinct other number')} and {plural(agg['cells'], 'distinct cell')}.")
+            if est:
+                stmt += (" Also " + " and ".join(f"{plural(n, 'timing-advance location estimate' if k == 'ta' else 'ping location estimate')}"
+                                                 for k, n in sorted(est.items())) + ".")
             if top:
                 stmt += " Most frequent: " + "; ".join(f"{x['other']} ({plural(x['n'], 'record')})" for x in top[:5]) + "."
             if imeis:
@@ -135,7 +177,7 @@ class Telecom(Analysis):
             f, l = self.first_last("target=?", (t,))
             ev += [(f, "first"), (l, "last")]
             for x in top[:5]:
-                e = self.one("SELECT event_id FROM tel WHERE target=? AND other=? ORDER BY ts_epoch IS NULL, ts_epoch, event_id LIMIT 1",
+                e = self.one("SELECT event_id FROM tcore WHERE target=? AND other=? ORDER BY ts_epoch IS NULL, ts_epoch, event_id LIMIT 1",
                              (t, x["other"]))
                 ev.append((e, "contact"))
             self.add("telecom_target", f"Target {t}: calls, texts and contacts", stmt,
@@ -143,13 +185,14 @@ class Telecom(Analysis):
                                  "data_sessions": agg["d"] or 0, "outgoing": agg["o"] or 0, "incoming": agg["i"] or 0,
                                  "call_minutes": round((agg["secs"] or 0) / 60, 1), "contacts": agg["c"], "cells": agg["cells"],
                                  "first_utc": agg["f"], "last_utc": agg["l"], "sources": srcs, "imeis": imeis[:20], "imsis": imsis[:20],
+                                 "timing_advance_estimates": est.get("ta", 0), "ping_estimates": est.get("ping", 0),
                                  "top": [[x["other"], x["n"]] for x in top[:ntop]]},
                       "tables": [{"title": "Most frequent other numbers",
                                   "columns": ["other", "records", "calls", "texts", "call_minutes", "outgoing", "incoming", "first_utc", "last_utc"],
                                   "rows": [[x["other"], x["n"], x["v"], x["s"], round((x["secs"] or 0) / 60, 1), x["o"], x["i"], x["f"], x["l"]]
                                            for x in top[: max(ntop, self.trows)]], "total_rows": agg["c"]}]},
-                     sql=f"SELECT other, COUNT(*) AS records, SUM(kind='voice') AS calls, SUM(kind IN ('sms','mms')) AS texts, "
-                         f"MIN(ts_utc), MAX(ts_utc) FROM calls WHERE target={sq(t)} AND other IS NOT NULL GROUP BY other ORDER BY records DESC",
+                     sql=f"SELECT other, COUNT(*) AS records, SUM(kind='voice') AS calls, SUM(kind IN ('sms','mms','rcs')) AS texts, "
+                         f"MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE target={sq(t)} AND other IS NOT NULL GROUP BY other ORDER BY records DESC",
                      evidence=ev, priority=2, sort_key=f"5{10**9 - agg['n']:010d}{t}", export="exports/telecom_contacts.csv")
 
     # ------------------------------------------------------------ target <-> target
@@ -157,8 +200,8 @@ class Telecom(Analysis):
         if len(self.targets) < 2:
             return
         ph = ",".join("?" * len(self.targets))
-        pairs = self.q(f"SELECT target, other, COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms')) AS s, "
-                       f"MIN(ts_utc) AS f, MAX(ts_utc) AS l FROM tel WHERE other IN ({ph}) AND target IN ({ph}) AND other != target "
+        pairs = self.q(f"SELECT target, other, COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms','rcs')) AS s, "
+                       f"MIN(ts_utc) AS f, MAX(ts_utc) AS l FROM tcore WHERE other IN ({ph}) AND target IN ({ph}) AND other != target "
                        f"GROUP BY target, other", tuple(self.targets) * 2)
         merged: dict = {}
         for p in pairs:
@@ -176,7 +219,7 @@ class Telecom(Analysis):
             stmt = (f"Targets {a} and {b} were in direct contact: {plural(m['n'], 'record')} "
                     f"({plural(m['v'], 'call')}, {plural(m['s'], 'text')}) from {T(m['f'])} to {T(m['l'])}, "
                     f"seen in {' and '.join(m['seen_in'])}.")
-            rows = self.q(f"SELECT event_id, ts_utc, target, other, dir, kind, duration_s, cell FROM tel WHERE {where} "
+            rows = self.q(f"SELECT event_id, ts_utc, target, other, dir, kind, duration_s, cell FROM tcore WHERE {where} "
                           f"ORDER BY ts_epoch, event_id LIMIT ?", args + (self.trows,))
             self.add("telecom_direct", f"Direct contact: {a} and {b}", stmt,
                      {"values": {"target_a": a, "target_b": b, "records": m["n"], "calls": m["v"], "texts": m["s"],
@@ -184,7 +227,7 @@ class Telecom(Analysis):
                       "tables": [{"title": "Records", "columns": ["cite", "ts_utc", "target", "other", "direction", "kind", "seconds", "cell"],
                                   "rows": [[self.cite(r["event_id"]), r["ts_utc"], r["target"], r["other"], r["dir"], r["kind"], r["duration_s"], r["cell"]]
                                            for r in rows], "total_rows": m["n"]}]},
-                     sql=f"SELECT cite, ts_utc, target, other, dir, kind, duration_s FROM calls WHERE (target={sq(a)} AND other={sq(b)}) "
+                     sql=f"SELECT cite, ts_utc, target, other, dir, kind, duration_s FROM ccore WHERE (target={sq(a)} AND other={sq(b)}) "
                          f"OR (target={sq(b)} AND other={sq(a)}) ORDER BY ts_utc",
                      evidence=self.tel_sample(where, args), priority=1, sort_key=f"1{10**9 - m['n']:010d}{a}{b}")
 
@@ -192,8 +235,8 @@ class Telecom(Analysis):
         mint = max(2, int(self.p.get("tel_common_min_targets", 2)))
         if len(self.targets) < mint:
             return
-        rows = self.q("SELECT other, target, COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms')) AS s, "
-                      "MIN(ts_utc) AS f, MAX(ts_utc) AS l, MIN(source_id) AS sid FROM tel "
+        rows = self.q("SELECT other, target, COUNT(*) AS n, SUM(kind='voice') AS v, SUM(kind IN ('sms','mms','rcs')) AS s, "
+                      "MIN(ts_utc) AS f, MAX(ts_utc) AS l, MIN(source_id) AS sid FROM tcore "
                       "WHERE other IS NOT NULL AND target IS NOT NULL GROUP BY other, target ORDER BY other, target")
         by: dict = collections.defaultdict(list)
         for r in rows:
@@ -220,8 +263,8 @@ class Telecom(Analysis):
                              "most_shared_targets": len(commons[0][1]) if commons else 0},
                   "tables": [{"title": "Contacts in common (rows x columns)", "columns": ["target"] + tmax,
                               "rows": [r[: len(tmax) + 1] for r in self.matrix[:40]], "total_rows": len(self.matrix)}]},
-                 sql="SELECT a.target AS target_a, b.target AS target_b, COUNT(DISTINCT a.other) AS shared_contacts FROM tel a "
-                     "JOIN tel b ON a.other = b.other AND a.target < b.target WHERE a.other NOT IN (SELECT DISTINCT target FROM tel "
+                 sql="SELECT a.target AS target_a, b.target AS target_b, COUNT(DISTINCT a.other) AS shared_contacts FROM tcore a "
+                     "JOIN tcore b ON a.other = b.other AND a.target < b.target WHERE a.other NOT IN (SELECT DISTINCT target FROM tcore "
                      "WHERE target IS NOT NULL) GROUP BY 1, 2 ORDER BY 3 DESC",
                  evidence=[], priority=1 if commons else 2, sort_key="2", export="exports/target_overlap.csv")
         for o, rs in commons[: self.max]:
@@ -240,7 +283,7 @@ class Telecom(Analysis):
                       "tables": [{"title": "By target", "columns": ["target", "records", "calls", "texts", "first_utc", "last_utc", "source"],
                                   "rows": [[r["target"], r["n"], r["v"], r["s"], r["f"], r["l"], self.labels([r["sid"]])] for r in rs[: self.trows]],
                                   "total_rows": len(rs)}]},
-                     sql=f"SELECT target, COUNT(*) AS records, MIN(ts_utc), MAX(ts_utc) FROM calls WHERE other={sq(o)} GROUP BY target ORDER BY target",
+                     sql=f"SELECT target, COUNT(*) AS records, MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE other={sq(o)} GROUP BY target ORDER BY target",
                      evidence=ev, priority=1 if len(rs) >= 3 else 2,
                      sort_key=f"3{999 - min(len(rs), 999):03d}{10**9 - sum(r['n'] for r in rs):010d}{o}",
                      export="exports/common_contacts.csv")
@@ -249,10 +292,10 @@ class Telecom(Analysis):
     def devices(self):
         for col, label in (("imei", "IMEI"), ("imsi", "IMSI")):
             word = "handset" if col == "imei" else "SIM"
-            shared = self.q(f"SELECT {col} AS v, COUNT(DISTINCT target) AS nt FROM tel WHERE {col} IS NOT NULL AND target IS NOT NULL "
+            shared = self.q(f"SELECT {col} AS v, COUNT(DISTINCT target) AS nt FROM tcore WHERE {col} IS NOT NULL AND target IS NOT NULL "
                             f"GROUP BY {col} HAVING nt >= 2 ORDER BY nt DESC, v")
             for s in shared[: self.max]:
-                per = self.q(f"SELECT target, COUNT(*) AS n, MIN(ts_utc) AS f, MAX(ts_utc) AS l, MIN(ts_epoch) AS fe FROM tel "
+                per = self.q(f"SELECT target, COUNT(*) AS n, MIN(ts_utc) AS f, MAX(ts_utc) AS l, MIN(ts_epoch) AS fe FROM tcore "
                              f"WHERE {col}=? GROUP BY target ORDER BY fe, target", (s["v"],))
                 stmt = (f"{label} {s['v']} appears on {plural(len(per), 'target')}: "
                         + "; ".join(f"{p['target']} from {T(p['f'])} to {T(p['l'])} ({plural(p['n'], 'record')})" for p in per[:10]) + ".")
@@ -267,10 +310,10 @@ class Telecom(Analysis):
                                      "periods": [[p["target"], p["f"], p["l"], p["n"]] for p in per]},
                           "tables": [{"title": "By target", "columns": ["target", "records", "first_utc", "last_utc"],
                                       "rows": [[p["target"], p["n"], p["f"], p["l"]] for p in per]}]},
-                         sql=f"SELECT target, COUNT(*), MIN(ts_utc), MAX(ts_utc) FROM calls WHERE {col}={sq(s['v'])} GROUP BY target",
+                         sql=f"SELECT target, COUNT(*), MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE {col}={sq(s['v'])} GROUP BY target",
                          evidence=ev, priority=1, sort_key=f"4{9 - min(len(per), 9)}{s['v']}")
             for t in self.targets:
-                per = self.q(f"SELECT {col} AS v, COUNT(*) AS n, MIN(ts_utc) AS f, MAX(ts_utc) AS l, MIN(ts_epoch) AS fe FROM tel "
+                per = self.q(f"SELECT {col} AS v, COUNT(*) AS n, MIN(ts_utc) AS f, MAX(ts_utc) AS l, MIN(ts_epoch) AS fe FROM tcore "
                              f"WHERE target=? AND {col} IS NOT NULL GROUP BY {col} ORDER BY fe, v", (t,))
                 if len(per) < 2:
                     continue
@@ -292,7 +335,7 @@ class Telecom(Analysis):
                                      "periods": [[p["v"], p["f"], p["l"], p["n"]] for p in per]},
                           "tables": [{"title": f"{label}s in time order", "columns": [col, "records", "first_utc", "last_utc"],
                                       "rows": [[p["v"], p["n"], p["f"], p["l"]] for p in per]}]},
-                         sql=f"SELECT {col}, COUNT(*), MIN(ts_utc), MAX(ts_utc) FROM calls WHERE target={sq(t)} GROUP BY {col} ORDER BY 3",
+                         sql=f"SELECT {col}, COUNT(*), MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE target={sq(t)} GROUP BY {col} ORDER BY 3",
                          evidence=ev, priority=2, sort_key=f"6{t}{col}")
 
     # ------------------------------------------------------------ co-location
@@ -303,7 +346,7 @@ class Telecom(Analysis):
         dmax = float(self.p.get("tel_same_site_km", 0.1))
         rows = self.con.execute(
             "SELECT t.event_id, t.target, t.ts_epoch, t.ts_utc, t.lat, t.lon, t.cell, t.azimuth, t.site_name, s.path "
-            "FROM tel t JOIN sources s ON s.id = t.source_id WHERE t.target IS NOT NULL AND t.ts_epoch IS NOT NULL "
+            "FROM tcore t JOIN sources s ON s.id = t.source_id WHERE t.target IS NOT NULL AND t.ts_epoch IS NOT NULL "
             "AND length(t.ts_utc) > 10 AND (t.lat IS NOT NULL OR t.cell IS NOT NULL) ORDER BY t.ts_epoch, t.event_id")
         recent = collections.deque()
         # occasions are built as matches arrive (in time order), so two phones that are together for weeks
@@ -379,12 +422,115 @@ class Telecom(Analysis):
                                   "rows": table, "total_rows": len(eps)}], "occasion_ids": occ_ids},
                      # reproduce-SQL: a lat/lon box slightly larger than the distance limit (the table above is exact)
                      sql=(f"SELECT ea.cite AS cite_a, a.ts_utc AS ts_a, a.cell AS cell_a, eb.cite AS cite_b, b.ts_utc AS ts_b, b.cell AS cell_b "
-                          f"FROM tel a JOIN tel b ON b.target={sq(tb)} AND b.ts_epoch BETWEEN a.ts_epoch - {int(win)} AND a.ts_epoch + {int(win)} "
+                          f"FROM tcore a JOIN tcore b ON b.target={sq(tb)} AND b.ts_epoch BETWEEN a.ts_epoch - {int(win)} AND a.ts_epoch + {int(win)} "
                           f"AND ((a.lat IS NOT NULL AND b.lat IS NOT NULL AND ABS(a.lat - b.lat) <= {dmax / 111.0:.5f} "
                           f"AND ABS(a.lon - b.lon) <= {dmax / (111.0 * math.cos(math.radians(min(abs(a['lat'] or 0), 80)))):.5f}) "
                           f"OR (a.lat IS NULL AND b.lat IS NULL AND a.cell = b.cell)) JOIN ev ea ON ea.id = a.event_id "
                           f"JOIN ev eb ON eb.id = b.event_id WHERE a.target={sq(ta)} AND length(a.ts_utc) > 10 ORDER BY a.ts_epoch, b.ts_epoch"),
                      evidence=ev, priority=1, sort_key=f"0{999 - min(len(eps), 999):03d}{ta}{tb}", export="exports/colocation.csv")
+
+    # ------------------------------------------------------------ tower dumps
+    def dumps(self):
+        """Tower dumps from any number of carriers and places: records are grouped into scenes by time (a gap of
+        more than tel_scene_gap_hours starts a new scene), then phones and handsets seen at 2+ scenes are listed,
+        and dump phones that are targets or contacts of targets in the call-record returns."""
+        rows = self.q("SELECT t.event_id, t.target, t.ts_epoch, t.ts_utc, t.source_id, COALESCE(t.section,'') AS section, t.imei, "
+                      "t.lat IS NOT NULL AS loc FROM tel t WHERE t.src_kind='dump' AND t.ts_epoch IS NOT NULL AND length(t.ts_utc) > 10 "
+                      "AND t.target IS NOT NULL ORDER BY t.ts_epoch, t.event_id")
+        if not rows:
+            return
+        gap = float(self.p.get("tel_scene_gap_hours", 3)) * 3600
+        scenes: list = []
+        for r in rows:
+            if not scenes or r["ts_epoch"] - scenes[-1]["end"] > gap:
+                scenes.append({"start": r["ts_epoch"], "end": r["ts_epoch"], "first": r["ts_utc"], "rows": []})
+            sc = scenes[-1]
+            sc["end"], sc["last"] = r["ts_epoch"], r["ts_utc"]
+            sc["rows"].append(r)
+        disp = {x["id"]: (x["label"], x["display"].replace("\\", "/").split("/")[-1]) for x in self.q("SELECT id, label, display FROM sources")}
+        for k, sc in enumerate(scenes, 1):
+            srcs = collections.OrderedDict()
+            for r in sc["rows"]:
+                lab, fn = disp.get(r["source_id"], ("?", "?"))
+                key = f"{lab} {fn}" + (f" ({r['section'][:90]})" if r["section"] else "")
+                srcs[key] = srcs.get(key, 0) + 1
+            sc["no"], sc["sources"] = k, srcs
+            sc["phones"] = {r["target"] for r in sc["rows"]}
+            stmt = (f"Tower-dump scene {k}: {plural(len(sc['rows']), 'record')} from {T(sc['first'])} to {T(sc['last'])}, "
+                    f"{plural(len(sc['phones']), 'different phone')}, from {plural(len(srcs), 'dump')}: "
+                    + "; ".join(f"{n} ({fmt_num(c)})" for n, c in list(srcs.items())[:8]) + ".")
+            self.add("telecom_dump_scene", f"Tower-dump scene {k}: {plural(len(sc['phones']), 'phone')}", stmt,
+                     {"values": {"scene": k, "records": len(sc["rows"]), "phones": len(sc["phones"]), "first_utc": sc["first"],
+                                 "last_utc": sc["last"], "dumps": list(srcs)[:20]},
+                      "tables": [{"title": "Dumps in this scene", "columns": ["dump", "records"],
+                                  "rows": [[n, c] for n, c in srcs.items()]}]},
+                     sql=f"SELECT cite, ts_utc, target AS phone, other, kind, cell, source, section FROM calls WHERE src_kind='dump' "
+                         f"AND ts_utc BETWEEN '{sc['first']}' AND '{sc['last']}' ORDER BY ts_utc",
+                     evidence=[(sc["rows"][0]["event_id"], "first"), (sc["rows"][-1]["event_id"], "last")],
+                     priority=2, sort_key=f"8{k:03d}")
+        # phones and handsets at 2+ scenes
+        by_phone: dict = collections.defaultdict(lambda: collections.defaultdict(list))
+        by_imei: dict = collections.defaultdict(lambda: collections.defaultdict(list))
+        for sc in scenes:
+            for r in sc["rows"]:
+                by_phone[r["target"]][sc["no"]].append(r)
+                if r["imei"]:
+                    by_imei[r["imei"]][sc["no"]].append(r)
+        multi = sorted(((ph, scs) for ph, scs in by_phone.items() if len(scs) >= 2), key=lambda x: (-len(x[1]), x[0]))
+        self.dump_multi = multi
+        for ph, scs in multi[: self.max]:
+            parts, ev, table = [], [], []
+            for no, rs in sorted(scs.items()):
+                srcset = sorted({disp.get(r["source_id"], ("?", "?"))[0] for r in rs})
+                parts.append(f"scene {no}: {plural(len(rs), 'record')} {T(rs[0]['ts_utc'])} to {T(rs[-1]['ts_utc'])} ({', '.join(srcset)})")
+                ev += [(rs[0]["event_id"], f"scene {no} first"), (rs[-1]["event_id"], f"scene {no} last")]
+                table.append([no, len(rs), rs[0]["ts_utc"], rs[-1]["ts_utc"], ", ".join(srcset), self.cite(rs[0]["event_id"])])
+            imeis = sorted({r["imei"] for rs in scs.values() for r in rs if r["imei"]})
+            stmt = (f"Phone {ph} is in the tower dumps of {plural(len(scs), 'scene')}: " + "; ".join(parts) + "."
+                    + (f" IMEI (first 14 digits): {', '.join(imeis[:4])}." if imeis else "")
+                    + " A tower-dump record shows the phone used one of the dumped cells in that window; it does not place "
+                      "the phone at a particular address.")
+            self.add("telecom_dump_multi", f"{ph}: in tower dumps at {plural(len(scs), 'scene')}", stmt,
+                     {"values": {"phone": ph, "scenes": sorted(scs), "scene_count": len(scs), "imeis": imeis[:10],
+                                 "records": {str(no): len(rs) for no, rs in scs.items()}},
+                      "tables": [{"title": "By scene", "columns": ["scene", "records", "first_utc", "last_utc", "sources", "first_cite"],
+                                  "rows": table}]},
+                     sql=f"SELECT cite, ts_utc, target AS phone, other, kind, cell, imei, source, section FROM calls "
+                         f"WHERE src_kind='dump' AND target={sq(ph)} ORDER BY ts_utc",
+                     evidence=ev, priority=1, sort_key=f"7{999 - len(scs):03d}{ph}", export="exports/tower_dump_phones.csv")
+        for imei, scs in sorted(by_imei.items()):
+            phones = sorted({r["target"] for rs in scs.values() for r in rs})
+            if len(scs) >= 2 and len(phones) >= 2:
+                ev = [(rs[0]["event_id"], f"scene {no}") for no, rs in sorted(scs.items())]
+                self.add("telecom_dump_imei", f"Handset {imei}: {plural(len(scs), 'scene')}, {plural(len(phones), 'number')}",
+                         f"Handset IMEI {imei} (first 14 digits) is in the tower dumps of {plural(len(scs), 'scene')} under "
+                         f"{plural(len(phones), 'different number')}: {', '.join(phones[:8])}.",
+                         {"values": {"imei": imei, "scenes": sorted(scs), "phones": phones[:20]}},
+                         sql=f"SELECT cite, ts_utc, target AS phone, imei, source FROM calls WHERE src_kind='dump' AND imei={sq(imei)} ORDER BY ts_utc",
+                         evidence=ev, priority=1, sort_key=f"7{imei}")
+        # dump phones that are targets or contacts of targets
+        if self.targets:
+            ph_t = sorted(set(by_phone) & self.tset)
+            contacts: dict = collections.defaultdict(set)
+            for r in self.q("SELECT DISTINCT other, target FROM tcore WHERE other IS NOT NULL"):
+                contacts[r["other"]].add(r["target"])
+            ph_c = sorted(ph for ph in by_phone if ph in contacts and ph not in self.tset)
+            for ph in ph_t + ph_c:
+                scs = by_phone[ph]
+                rs = [r for x in scs.values() for r in x]
+                who = ("is itself a target" if ph in self.tset else
+                       f"is a contact of {plural(len(contacts[ph]), 'target')} ({', '.join(sorted(contacts[ph])[:6])})")
+                ev = [(rs[0]["event_id"], "in dump")]
+                if ph not in self.tset:
+                    e2 = self.one("SELECT event_id FROM tcore WHERE other=? ORDER BY ts_epoch LIMIT 1", (ph,))
+                    ev.append((e2, "contact"))
+                self.add("telecom_dump_target", f"{ph}: in a tower dump and {'a target' if ph in self.tset else 'a contact of a target'}",
+                         f"Phone {ph} {who} and appears in the tower dumps of {plural(len(scs), 'scene')} "
+                         f"({plural(len(rs), 'record')}, first {T(rs[0]['ts_utc'])}).",
+                         {"values": {"phone": ph, "is_target": ph in self.tset, "targets": sorted(contacts.get(ph, ()))[:20],
+                                     "scenes": sorted(scs), "records": len(rs)}},
+                         sql=f"SELECT cite, ts_utc, target, other, src_kind, source FROM calls WHERE target={sq(ph)} OR other={sq(ph)} ORDER BY ts_utc",
+                         evidence=ev, priority=1, sort_key=f"7{ph}")
 
     # ------------------------------------------------------------ CSV exports
     def exports(self):
@@ -392,18 +538,20 @@ class Telecom(Analysis):
         out.mkdir(parents=True, exist_ok=True)
         with open(out / "telecom_records.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["cite", "ts_utc", "target", "other", "direction", "kind", "duration_s", "cell", "cell_last", "lat", "lon",
-                        "azimuth", "site_name", "location_basis", "location_cite", "imei", "imsi", "source"])
-            for r in self.con.execute("SELECT cite, ts_utc, target, other, dir, kind, duration_s, cell, cell_last, lat, lon, azimuth, "
-                                      "site_name, loc_basis, loc_cite, imei, imsi, source FROM calls ORDER BY ts_utc, id"):
+            w.writerow(["cite", "ts_utc", "target", "other", "direction", "kind", "duration_s", "cell", "cell_last", "eci", "lat",
+                        "lon", "azimuth", "site_name", "location_basis", "location_cite", "imei_14", "imsi", "device_lat",
+                        "device_lon", "device_confidence", "record_kind", "section", "source"])
+            for r in self.con.execute("SELECT cite, ts_utc, target, other, dir, kind, duration_s, cell, cell_last, eci, lat, lon, azimuth, "
+                                      "site_name, loc_basis, loc_cite, imei, imsi, dev_lat, dev_lon, dev_conf, src_kind, section, source "
+                                      "FROM calls ORDER BY ts_utc, id"):
                 w.writerow(list(r))
         with open(out / "telecom_contacts.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["target", "other", "records", "calls", "texts", "call_minutes", "outgoing", "incoming", "first_utc", "last_utc",
                         "other_is_target"])
-            for r in self.con.execute("SELECT target, other, COUNT(*), SUM(kind='voice'), SUM(kind IN ('sms','mms')), "
+            for r in self.con.execute("SELECT target, other, COUNT(*), SUM(kind='voice'), SUM(kind IN ('sms','mms','rcs')), "
                                       "ROUND(SUM(CASE WHEN kind='voice' THEN duration_s END)/60.0, 1), SUM(dir='out'), SUM(dir='in'), "
-                                      "MIN(ts_utc), MAX(ts_utc) FROM tel WHERE other IS NOT NULL GROUP BY target, other ORDER BY target, 3 DESC"):
+                                      "MIN(ts_utc), MAX(ts_utc) FROM tcore WHERE other IS NOT NULL GROUP BY target, other ORDER BY target, 3 DESC"):
                 w.writerow(list(r) + ["yes" if r[1] in self.tset else ""])
         with open(out / "common_contacts.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
@@ -416,6 +564,12 @@ class Telecom(Analysis):
             w.writerow(["target"] + self.targets)
             for row in getattr(self, "matrix", []):
                 w.writerow(row)
+        with open(out / "tower_dump_phones.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["phone", "scene_count", "scene", "records", "first_utc", "last_utc"])
+            for ph, scs in getattr(self, "dump_multi", []):
+                for no, rs in sorted(scs.items()):
+                    w.writerow([ph, len(scs), no, len(rs), rs[0]["ts_utc"], rs[-1]["ts_utc"]])
         with open(out / "colocation.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["target_a", "target_b", "occasion", "ts_a", "cite_a", "cell_a", "lat_a", "lon_a", "ts_b", "cite_b", "cell_b",

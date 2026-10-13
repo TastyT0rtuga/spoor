@@ -440,7 +440,8 @@ class Report:
         for f in self.findings:
             if f["kind"] == "telecom_quality":
                 v = (f.get("facts") or {}).get("values", {})
-                if v.get("inferred_targets") or v.get("cross_folder_matches") or v.get("no_target") or v.get("unlocated"):
+                if v.get("inferred_targets") or v.get("cross_folder_matches") or v.get("no_target") or v.get("unlocated") \
+                        or v.get("filename_targets") or v.get("imsi_targets") or v.get("imei_sci"):
                     assumptions.append(f)
         for f in assumptions:
             L.append(f"- [ ] {flink(f['fid'])} {md_escape(f['statement'])}")

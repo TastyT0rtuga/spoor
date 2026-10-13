@@ -94,6 +94,36 @@ def telecom_checks(check) -> None:
     con.close()
 
 
+def layout_checks(check) -> None:
+    """Carrier layouts (fictional values): the format handling works on this machine."""
+    folder = app_root() / "demo" / "carrier_layouts"
+    if not folder.exists():
+        check(False, "carrier-layout demo returns present (demo/carrier_layouts)")
+        return
+    import json as _json
+    from . import db as dbm
+    from .case import create_case, register_path
+    from .jobs import start_job
+    c = create_case("Self-test carrier layouts", "selftest", "", "America/New_York")
+    con = c.db()
+    register_path(c, con, str(folder))
+    print("\nRunning the full pipeline on the carrier-layout demo returns…")
+    jid = start_job(c, con, "run", {"llm": False, "figures": False}, wait=True)
+    con = c.db()
+    check(dbm.rows(con, "SELECT status FROM jobs WHERE id=?", (jid,))[0]["status"] == "done", "carrier-layout pipeline finished")
+    targets = {r[0] for r in con.execute("SELECT DISTINCT target FROM tcore WHERE target IS NOT NULL")}
+    check({"+12025550111", "+15715550122", "+17035550133", "+12405550144"} <= targets,
+          "targets found from a file name, a preamble, 'Usage For' and an MSISDN column")
+    n, loc = con.execute("SELECT COUNT(*), SUM(lat IS NOT NULL) FROM tel WHERE src_kind='cdr' AND kind='voice' "
+                         "AND (cell IS NOT NULL OR eci IS NOT NULL)").fetchone()
+    check(n and loc == n, f"every call that names a cell located: eNodeB+sector, hex ECGI, AT&T CellLocation, inline ({loc} of {n})")
+    multi = [_json.loads(f)["values"]["phone"] for (f,) in con.execute("SELECT facts FROM findings WHERE kind='telecom_dump_multi'")]
+    check(multi == ["+17035550155"], "tower dumps from two carriers: the phone at both scenes found")
+    check(con.execute("SELECT COUNT(*) FROM tel WHERE src_kind='ta' AND target='+12025550111'").fetchone()[0] == 30,
+          "timing-advance report (named by IMSI) filed under the target number")
+    con.close()
+
+
 def make_demo_case(run: bool = False):
     from .case import create_case, register_path
     c = create_case("Demo (fictional data)", "demo", "Fictional returns bundled with Spoor for practice", "America/New_York")
@@ -276,6 +306,7 @@ def selftest(keep: bool = False) -> bool:
         srv.shutdown()
         con.close()
         telecom_checks(check)
+        layout_checks(check)
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()

@@ -241,10 +241,21 @@ def unit_telecom():
     ok(norm_cell("NL-1021-02") == norm_cell("nl 1021 2") == "NL-1021-2" and norm_cell("N/A") is None, "cell IDs compared without case, separators or leading zeros")
     ok(parse_duration("00:06:46") == 406 and parse_duration("6:46") == 406 and parse_duration("95") == 95
        and parse_duration("2.5", "Duration (min)") == 150 and parse_duration("12 sec") == 12, "durations read (HH:MM:SS, MM:SS, seconds, minutes header)")
-    ok(norm_dir("Outgoing", "") == "out" and norm_dir("", "MTC") == "in" and norm_dir("", "SMS-MO") == "out" and norm_dir("", "Voice") == "",
-       "direction from direction column or call type")
-    ok(norm_kind("SMS-MT") == "sms" and norm_kind("MOC") == "voice" and norm_kind("GPRS") == "data" and norm_kind("Text") == "sms",
-       "call / text / data kinds")
+    ok(norm_dir("Outgoing", "") == "out" and norm_dir("", "MTC") == "in" and norm_dir("", "SMS-MO") == "out" and norm_dir("", "Voice") == ""
+       and norm_dir("MF", "") == "fwd" and norm_dir("M0", "") == "out", "direction from direction column or call type (MF forwarded, M0 typo)")
+    ok(norm_kind("SMS-MT") == "sms" and norm_kind("MOC") == "voice" and norm_kind("GPRS") == "data" and norm_kind("Text") == "sms"
+       and norm_kind("SMSC") == "sms" and norm_kind("RCS-IMCHAT") == "rcs" and norm_kind("mSTerminatingSMSinMSC") == "sms"
+       and norm_kind("AUDIO CALL") == "voice" and norm_kind("NULL") == "", "call / text / chat / data kinds")
+    from spoor.telecom import parse_eci, parse_cell_location, norm_imei
+    ok(parse_eci("12344578")[0] == 12344578 and parse_eci("311480-0c82216")[0] == 51234 * 256 + 22
+       and parse_eci("311580-123456-1")[0] == 123456 * 256 + 1 and parse_eci("310260-0012345-005")[0] == 12345 * 256 + 5
+       and parse_eci("310260012344578")[0] == 12344578 and parse_eci("12344578:12344579")[0] == 12344578
+       and parse_eci("N/A")[0] is None, "cell identity: decimal, hex ECGI, MCC-MNC-eNB-cell, 15-digit ECGI, first:last")
+    cl = parse_cell_location("[12344578:48221:-77.30020:38.80010:110:-1.0:200;12344579:48221:-77.3:38.8:230:-1.0:200]")
+    ok(cl["eci"] == 12344578 and cl["lat"] == 38.8001 and cl["lon"] == -77.3002 and cl["azimuth"] == 110 and cl["cells_listed"] == 2
+       and "lat" not in parse_cell_location("[000000020:0:0.0:0.0:-1:-1.0:]"), "AT&T CellLocation: longitude first, 0,0 = unknown")
+    ok(norm_imei("350000000012340")[0] == norm_imei("3500000000123401")[0] == "35000000001234" and norm_imei("3.50000E+14") == (None, "sci"),
+       "IMEIs compared on 14 digits; scientific notation rejected")
     ok(abs(km(38.7521, -77.4739, 38.75228, -77.47371) * 1000 - 26) < 3, "site distance (haversine)")
     m, _ = propose_mapping(["Name", "Cell", "Email"], {"Cell": ["(703) 555-0142"], "Name": ["J"], "Email": ["a@b.com"]})
     ok("cell" not in m, "a 'Cell' column holding phone numbers is not read as a cell site")
@@ -268,7 +279,11 @@ def telecom_isolation():
     ok(default_account_from([("L2", "Account Number: 12345678")])[0] is None, "'Account Number:' in a bank preamble is not a default account")
     ok(categorize("Sent text", "", None) == "transaction" and categorize("Sent text", "", None, telecom=True) == "communication",
        "call-record wording only applies to telecom tables")
+    from spoor.readers.delimited import scan as _scan
     from spoor.selftest import demo_returns_dir
+    split = [p.name for p in demo_returns_dir().rglob("*") if p.suffix in (".csv", ".txt", ".log", ".tsv")
+             and len(_scan(p, p.name)["tables"]) != 1]
+    ok(not split, "ordinary single-table files are never split into several tables" + (f": {split}" if split else ""))
     tmp = Path(tempfile.mkdtemp(prefix="spoor-iso-"))
     old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
     try:
@@ -278,6 +293,95 @@ def telecom_isolation():
         n_fig = con.execute("SELECT COUNT(*) FROM figures WHERE slug='contacts'").fetchone()[0]
         ok(n_tel == 0 and n_f == 0 and n_fig == 0 and not (_c.exports_dir / "telecom.kml").exists(),
            "the non-telecom demo produces no telecom records, findings, figure or KML")
+        rows = {r[0]: r[1] for r in con.execute("SELECT display, rows FROM sources")}
+        st = [v for k, v in rows.items() if k.endswith("statement_transactions.csv")]
+        ok(st == [6], f"the bank statement keeps all 6 rows ({st})")
+    finally:
+        for k, v_ in old_env.items():
+            if v_ is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v_
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def carrier_layout_tests():
+    """Carrier layouts (fictional values): every quirk the format readers handle, one case per layout."""
+    import json as _json
+    sys.path.insert(0, str(ROOT / "tests"))
+    import make_carrier_layouts as mcl
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-cl-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        mcl._USED.clear()
+        mcl.R.seed(20240521)
+        mcl.main(str(tmp / "gen"))
+        bundled = ROOT / "demo" / "carrier_layouts"
+        same = all((tmp / "gen" / p.relative_to(bundled)).read_bytes() == p.read_bytes()
+                   for p in bundled.rglob("*") if p.is_file() and p.suffix in (".csv", ".txt"))
+        ok(same, "carrier-layout generator reproduces the bundled text/CSV demo files")
+        cases = {}
+        for name in ("mediation", "volte", "report", "hda", "dumps"):
+            shutil.copytree(bundled / name, tmp / "in" / name)
+        for f in (bundled / "location").iterdir():
+            shutil.copy(f, tmp / "in" / "mediation" / f.name)
+        for name in ("mediation", "volte", "report", "hda", "dumps"):
+            c, con = _figure_case(tmp / name, f"Layout {name}", tmp / "in" / name, params={"figures": False})
+            cases[name] = (c, con)
+
+        def q(name, sql, args=()):
+            return cases[name][1].execute(sql, args).fetchall()
+
+        def facts(name, kind):
+            return [_json.loads(f)["values"] for (f,) in q(name, "SELECT facts FROM findings WHERE kind=? ORDER BY fid", (kind,))]
+
+        E = mcl.EXPECT
+        # mediation spreadsheet: target only in the file name; eNodeB + sector -> ECI -> tower list; texts carry no cell
+        tq = facts("mediation", "telecom_quality")[0]
+        ok(E["mediation_target"] in tq["targets"] and list(tq["filename_targets"].values())[0]["target"] == E["mediation_target"],
+           "mediation layout: target taken from the file name (and listed for review)")
+        n_eci = q("mediation", "SELECT COUNT(*) FROM tel WHERE loc_basis LIKE 'tower list in the same folder (by ECI)%'")[0][0]
+        ok(n_eci > 0, f"mediation layout: voice records without coordinates located by eNodeB + sector -> ECI ({n_eci})")
+        tl = tuple(q("mediation", "SELECT COUNT(*), SUM(ts_utc IS NOT NULL) FROM events e JOIN sources s ON s.id=e.source_id "
+                                  "WHERE s.display LIKE '%Tower_List%'")[0])
+        ok(tl[0] == 24 and not tl[1], "a tower list's ListDate column is not read as event times")
+        ok(not q("mediation", "SELECT 1 FROM tel WHERE target=?", (E["ta_imsi"],)) and
+           q("mediation", "SELECT COUNT(*) FROM tel WHERE src_kind='ta' AND target=?", (E["mediation_target"],))[0][0] == 30,
+           "timing-advance report named by IMSI filed under the number whose CDR shows that IMSI")
+        ok(q("mediation", "SELECT COUNT(*) FROM tel WHERE src_kind='ping' AND target=? AND dev_lat IS NOT NULL AND lat IS NULL",
+             (E["mediation_target"],))[0][0] == 12, "pings read as device location estimates, not cell sites")
+        prof = facts("mediation", "telecom_target")[0]
+        ok(prof["data_sessions"] == 0 and prof["timing_advance_estimates"] == 30 and prof["ping_estimates"] == 12,
+           "location estimates are not counted as data usage in the target profile")
+        # VoLTE: local and GMT times, MF legs, Cell Face + eNB -> hex ECGI
+        m = _json.loads(q("volte", "SELECT config FROM sources WHERE display LIKE '%VoLTE%'")[0][0])["tables"][0]["mapping"]
+        ok(m.get("ts") == "Record Open Dt/Tm(GMT)" and m.get("orig") == "CPN" and m.get("term") == "Called #",
+           "VoLTE layout: the GMT column is the time; CPN / Called # are the two parties")
+        ok(tuple(q("volte", "SELECT COUNT(*), SUM(lat IS NOT NULL) FROM tel")[0]) == (35, 35), "VoLTE layout: every record located via hex ECGI")
+        ok(q("volte", "SELECT COUNT(*) FROM tel WHERE dir='fwd'")[0][0] == 5 and facts("volte", "telecom_target")[0]["records"] == 30,
+           "VoLTE layout: forwarded (MF) legs kept but not counted")
+        ok(not q("volte", "SELECT 1 FROM tel WHERE other = target"), "VoLTE layout: the other party is never the target itself")
+        # report text: two tables, CellLocation longitude-first, damaged IMEI
+        sc = _json.loads(q("report", "SELECT config FROM sources")[0][0])
+        ok([t["name"] for t in sc["tables"]] == ["Voice Usage For: (703)555-0133", "Data Usage For: (703)555-0133"],
+           "report layout: two tables in one text file, named by their labels")
+        pr = facts("report", "telecom_target")[0]
+        ok(pr["target"] == E["report_target"] and pr["calls"] == 8 and pr["data_sessions"] == 4,
+           "report layout: target from 'Voice Usage For'; table label gives the record kind")
+        loc = q("report", "SELECT lat, lon FROM tel WHERE lat IS NOT NULL LIMIT 1")[0]
+        ok(38 < loc[0] < 39 and -78 < loc[1] < -77, "report layout: CellLocation read longitude-first")
+        rq = facts("report", "telecom_quality")[0]
+        ok(rq["imei_sci"] == 1, "report layout: IMEI in scientific notation flagged and not used")
+        # HDA: preamble target, date + separate time column
+        ok(facts("hda", "telecom_target")[0]["target"] == E["hda_target"], "HDA layout: target from 'o Target MSISDN :'")
+        ok(len({r[0] for r in q("hda", "SELECT ts_utc FROM tel")}) == 20, "HDA layout: date and time columns combined (20 distinct times)")
+        # tower dumps across carriers and scenes
+        ok(len(facts("dumps", "telecom_dump_scene")) == 2, "tower dumps grouped into 2 scenes across carriers")
+        ok([f["phone"] for f in facts("dumps", "telecom_dump_multi")] == [E["both_scenes"]],
+           "tower dumps: exactly the phone planted at both scenes")
+        tw = facts("dumps", "telecom_dump_imei")
+        ok(len(tw) == 1 and set(tw[0]["phones"]) == E["twin_numbers"], "tower dumps: one handset under two numbers at both scenes")
+        ok(not facts("dumps", "telecom_target"), "tower-dump phones are not reported as targets")
     finally:
         for k, v_ in old_env.items():
             if v_ is None:
@@ -320,9 +424,10 @@ def telecom_tests():
         dirs = {tuple(sorted((x["target_a"], x["target_b"]))) for k, x in facts if k == "telecom_direct"}
         ok(dirs == {tuple(sorted(d)) for d in pl["direct"]}, f"telecom: exactly the planted direct contacts ({dirs})")
         sh = [x for k, x in facts if k == "telecom_shared_imei"]
-        ok(len(sh) == 1 and sh[0]["imei"] == pl["shared_imei"][0] and set(sh[0]["targets"]) == pl["shared_imei"][1], "telecom: shared IMEI")
+        ok(len(sh) == 1 and sh[0]["imei"] == pl["shared_imei"][0][:14] and set(sh[0]["targets"]) == pl["shared_imei"][1],
+           "telecom: shared IMEI (compared on its first 14 digits)")
         ch = [x for k, x in facts if k == "telecom_imei_change" and x["target"] == pl["imei_change"][0]]
-        ok(ch and ch[0]["imeis"] == [pl["imei_change"][1], pl["imei_change"][2]], "telecom: handset change in time order")
+        ok(ch and ch[0]["imeis"] == [pl["imei_change"][1][:14], pl["imei_change"][2][:14]], "telecom: handset change in time order")
         co = {tuple(sorted((x["target_a"], x["target_b"]))) for k, x in facts if k == "telecom_colocation"}
         ok(co == {tuple(sorted(c)) for c in pl["colocation"]}, f"telecom: exactly the planted co-locations ({co})")
         cross = [x for k, x in facts if k == "telecom_colocation" and "+17035550101" in (x["target_a"], x["target_b"])]
@@ -335,13 +440,13 @@ def telecom_tests():
         root = ET.parse(a.exports_dir / "telecom.kml").getroot()
         ns = "{http://www.opengis.net/kml/2.2}"
         folders = [f.find(ns + "name").text for f in root.iter(ns + "Folder")]
-        ok(folders[0] == "Cell sites" and folders[-1] == "Co-location occasions" and len(folders) == 6,
+        ok(folders[0].startswith("Cell sites used") and folders[-1] == "Co-location occasions" and len(folders) == 6,
            f"KML: cell sites, one folder per target, co-location ({len(folders)} folders)")
         stamps = [w.text for w in root.iter(ns + "when")]
         ok(stamps and all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", t) for t in stamps), "KML: every record time-stamped in UTC")
         txt = (a.exports_dir / "telecom.kml").read_text(encoding="utf-8")
         ok(txt.count("http") == 1 and "href" not in txt, "KML: no external references (icons, links)")
-        ok(re.search(r"Record: S\d+:L\d+", txt) and re.search(r"Site location: tower list in the same folder S\d+:L\d+", txt),
+        ok(re.search(r"Record: S\d+:L\d+", txt) and re.search(r"Site location: tower list in the same folder \(by cell label\) S\d+:L\d+", txt),
            "KML: each point cites its call record and the tower-list row of its location")
         figs = {f["slug"]: f for f in figure_rows(con)}
         f3 = figs["contacts"]
@@ -449,6 +554,8 @@ def main():
     print("\n[telecom]")
     telecom_isolation()
     telecom_tests()
+    print("\n[carrier layouts]")
+    carrier_layout_tests()
     print("\n[self-test]")
     from spoor.selftest import selftest
     ok(selftest(), "built-in self-test")

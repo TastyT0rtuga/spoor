@@ -153,23 +153,50 @@ def methods_text(case, con) -> str:
          f"sector wedges {p.get('kml_sector_km', 1.0)} km long"]] if dbm.get_meta(con, "telecom") else [])), ""]
     if dbm.get_meta(con, "telecom"):
         L += ["### Telecom returns", "",
-              "- **Reading.** A table is read as call detail records when an originating/terminating number, cell, duration or IMSI "
-              "column is mapped (Sources -> the file -> 'Read as' shows and changes every choice). The target is the row's account, "
-              "else the return's default account (e.g. 'Target Number:' in the preamble). If neither exists and every row has "
-              "originating and terminating numbers, the number on one end of at least 80% of the rows is taken as the target; this is "
-              "a priority-1 assumption. North American numbers are written in E.164 (+1...). Direction is from the target's side "
-              "(out = the target originated). Kind (call/text/MMS/data) comes from the record's type text.",
-              "- **Cell-site locations.** A row with a cell ID and latitude/longitude but no time or numbers is a tower-list row. A call "
-              "record takes coordinates written on the record itself, else those of its first cell from a tower list in the same "
-              "folder (the same carrier), else from a tower list elsewhere only if every list naming that cell agrees within "
-              f"{int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m. Cell IDs are compared after upper-casing, one separator and no "
-              "leading zeros ('NL-1021-02' = 'nl 1021 2'). Each located record cites the tower-list row its coordinates came from.",
-              "- **What a location means.** The coordinates are the cell site that served the record, not the phone. Sector direction "
-              "is shown but coverage area, range and timing advance are not modelled; KML wedges are a fixed-length drawing aid. "
+              "- **Reading.** A table is read as telecom records when it has originating and terminating numbers, a cell / eNodeB / "
+              "ECI column, an IMSI, an other party with a duration, or a phone with a location estimate (Sources -> the file -> "
+              "'Read as' shows and changes every choice). A table of cell identities with coordinates and nothing about calls is a "
+              "cell-site (tower) list; its dates (e.g. ListDate) describe the list and are not events. Report text files holding "
+              "several tables (a voice and a data table; one section per tower-dump search) are read table by table, each named by "
+              "the label above it. When a carrier gives a local time and a GMT/UTC time, the GMT/UTC column is used; a date column "
+              "that is midnight on every row next to a 'time' column is combined with it.",
+              "- **Target.** The row's account (MSISDN / MTN column), else the number the return names in its preamble ('Target "
+              "Number:', 'o Target MSISDN :', 'Voice Usage For:'), else the number in the file name - carriers name call-record files "
+              "after the target ('CDR_Mediations_<number>_...', 'CellSites-CDR_..._<number>', '..._CXM_HDA_volte_<number>_...') - "
+              "else the number on one end of at least 80% of the rows. File-name and inferred targets are priority-1 assumptions in "
+              "REVIEW.md. Timing-advance reports are named after the IMSI; when a call-record return shows which number used that "
+              "IMSI, the records are filed under that number (cited). North American numbers are written in E.164 (+1...). "
+              "Direction is from the target's side; forwarded legs (Verizon 'MF') are kept but not counted as contacts.",
+              "- **Cell identity.** Every LTE cell is reduced to its ECI (eNodeB x 256 + cell), however the carrier writes it: a "
+              "decimal ECI / LTE_CI / E_CGI / CGI; an ECGI 'MCC-MNC + hex ECI' (e.g. 311480-0c82216); 'MCC-MNC-eNodeB-cell' "
+              "(e.g. 311580-123456-1); a 15-digit ECGI (MCC, MNC, 9-digit ECI); an eNodeB column plus the record's sector / cell-face "
+              "column (e.g. 1st LTE Site ID 48221 + 1st LTE Sector ID 2; eNB ID 51234 + Cell Face 22); or AT&T's CellLocation "
+              "'[ECI:eNodeB:longitude:latitude:azimuth:...]' (longitude first; 0,0 or azimuth -1 mean unknown; when several cells are "
+              "listed the first is used). A tower list's 'Sector' (1/2/3) is not a cell ID and is not combined with the eNodeB.",
+              "- **Cell-site locations.** A record takes coordinates written on the record itself, else those of its cell from a tower "
+              "list - by ECI, or by the cell label as written when there is no ECI - preferring a list in the same folder (the same "
+              "carrier); a list elsewhere is used only if every list naming that cell agrees within "
+              f"{int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m. Azimuth and beamwidth missing from the record are taken from "
+              "the tower list entry for the same ECI. Each located record cites the tower-list row its coordinates came from.",
+              "- **Handsets.** IMEIs are compared on their first 14 digits (type allocation code + serial): carriers append a Luhn "
+              "check digit, a 0 or a two-digit software version. A value shown in scientific notation (e.g. 3.5E+14) was "
+              "damaged by a spreadsheet before it reached Spoor and is not used (counted in the data-quality finding).",
+              "- **Tower dumps.** A source is a tower dump when its file name says so (TWD_, ReportTOWER, TowerData, ...) or when it "
+              "covers many phones with none on half its records. Its records are about the phone on the tower: the 'Number "
+              "Associated w/Tower' / MSISDN column, else the calling number of an outgoing record and the called number of an "
+              "incoming one. Dump records from any number of carriers are grouped into scenes by time (a gap of more than "
+              f"{p.get('tel_scene_gap_hours', 3)} hours starts a new scene); phones and handsets seen at two or more scenes, and dump "
+              "phones that are targets or contacts of targets, are reported. A dump record shows that the phone used a dumped cell "
+              "in that window, not that it was at a particular address.",
+              "- **Location estimates.** Timing-advance (end latitude/longitude, confidence) and ping positions are the carrier's "
+              "estimate of where the DEVICE was. They are stored and drawn apart from cell sites, with the confidence as the carrier "
+              "states it, and are not counted as calls or data use.",
+              "- **What a location means.** A record's coordinates are those of the cell site that served it, not of the phone. "
+              "Sector direction is shown but coverage area and range are not modelled; KML wedges are a fixed-length drawing aid. "
               "Co-location therefore means both phones were served by co-located sites close in time - not that the users were "
               "together. Carriers differ in whether the first/last cell and the time of seizure or of answer is recorded.",
-              "- **Not analysed in this version.** Timing-advance / RTT / per-call distance estimates, tower dumps, and the IP "
-              "addresses of data sessions (unless mapped as an IP column).", ""]
+              "- **Not analysed in this version.** 3G (LAC + cell ID, Lucent sector offsets) tower joins, per-call RTT distance "
+              "reports, and the IP addresses of data sessions (unless mapped as an IP column).", ""]
     if wl:
         L += ["Watchlists used:", "", _t(["File", "Entries", "SHA-256"], [[k, str(v[1]), v[0]] for k, v in wl.items()]), ""]
     L += figures_section(con, p)

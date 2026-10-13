@@ -167,7 +167,7 @@ returns. Set **CPU threads** to 8 (the P-cores).
 | Identifiers | every email, phone, Bitcoin/Ethereum/TRON/Litecoin/Dogecoin/Monero address, MAC, IMEI and URL, kept only when its checksum verifies (Base58Check, Bech32/Bech32m, EIP-55, Luhn) |
 | Counterparties | most frequent counterparties per account; largest amounts (totals only within one currency) |
 | Watchlists | hits against your own lists of IPs, ranges and identifiers (format in `watchlists\README.txt`; README files are not read as lists) |
-| Calls, texts & cell sites | for any number of telecom returns at once: per-target totals, top contacts and minutes; **direct contact between targets**; **numbers in contact with 2+ targets** and a target-by-target table of contacts in common; **IMEIs/IMSIs on 2+ targets** and handset/SIM changes in time order; **co-location** (two targets served by cell sites within 100 m within 15 minutes, across carriers by coordinates); the KML; how every record was read and located |
+| Calls, texts & cell sites | for any number of telecom returns at once: per-target totals, top contacts and minutes; **direct contact between targets**; **numbers in contact with 2+ targets** and a target-by-target table of contacts in common; **IMEIs/IMSIs on 2+ targets** and handset/SIM changes in time order; **co-location** (two targets served by cell sites within 100 m within 15 minutes, across carriers by coordinates); **tower dumps** from any number of carriers grouped into scenes, with the **phones and handsets seen at 2+ scenes** and dump phones that are targets or their contacts; timing-advance and ping location estimates; the KML; how every record was read and located |
 
 Thresholds (burst size, gap length, windows…) are under **Settings → Analysis settings** and are
 recorded in each case's `METHODS.md`.
@@ -225,15 +225,20 @@ tables, and key/value layouts such as some providers' records pages), PDF (text 
 **scanned pages are listed as not analysed — no OCR**), plain text and logs (Apache/Nginx, mbox),
 and ZIP (extracted into the case folder; each member hashed and cited separately).
 
-*Telecom returns:* call detail records are recognised from their columns - originating/terminating
-number (or other party + direction), call type, duration (HH:MM:SS, seconds or minutes), first/last
-cell or sector, IMEI, IMSI, and latitude/longitude/azimuth/beamwidth when a carrier writes them on each
-row. Cell-site (tower) lists are read the same way and matched to the call records by cell ID, preferring
-the list in the same folder (the same carrier). The target is the account column, else the number named
-in the preamble ("Target Number: 7035550101"); if neither exists, the number on one end of 80%+ of the
-records is used and flagged as a priority-1 assumption. Numbers are compared in E.164 (+17035550101).
-Check every mapping under Sources → the file; `REVIEW.md` lists each telecom table's columns for you
-to confirm. A record's location is the cell site that served it, not the phone.
+*Telecom returns:* call detail records, tower dumps, timing-advance and ping reports, and cell-site
+(tower) lists are recognised from their columns - originating/terminating numbers (or other party +
+direction), call type, duration, first/last cell or sector, eNodeB, ECI / ECGI / LTE_CI / CGI, IMEI, IMSI,
+and coordinates on each row when a carrier writes them. Report text files with several tables (a voice and
+a data table, one section per tower-dump search) are read table by table. Every LTE cell is reduced to its
+ECI (eNodeB x 256 + cell) however it is written - decimal, hex ECGI, MCC-MNC-eNodeB-cell, eNodeB + sector
+column, or AT&T's bracketed CellLocation - and matched to tower lists on that, preferring the list in the same
+folder (the same carrier). The target is the account column, else the number named in the preamble, else the
+number in the file name (carriers name call-record files after the target), else the number on one end of
+80%+ of the records; the last two are priority-1 assumptions to verify. Timing-advance reports, named after
+the IMSI, are filed under the number whose call records show that IMSI. Numbers are compared in E.164
+(+17035550101), IMEIs on their first 14 digits. A record's location is the cell site that served it, not the
+phone; timing-advance and ping positions are kept apart as estimates of the device position. Check every
+mapping under Sources → the file; `REVIEW.md` lists each telecom table's columns for you to confirm.
 
 *Proximity pairing:* in free text where an IP and its time sit on different lines (HTML key/value
 pages), an IP line is paired with the nearest timestamp line within 6 lines, never across another
@@ -306,6 +311,8 @@ Spoor\
   watchlists\       optional lists checked in every case
   demo\returns\     fictional returns used by the self-test and the demo case
   demo\telecom\     fictional call detail records and cell-site lists (three carriers, four targets)
+  demo\carrier_layouts\  fictional returns in US carriers' layouts (mediation, VoLTE, report text, HDA,
+                    tower dumps, timing advance, pings) - used by the self-test
   docs\             the example figures shown in this README (drawn from the demo returns)
   cases\            your cases (created on first use)
   tests\            developer tests (python tests\run_tests.py)
