@@ -50,7 +50,10 @@ def run_figures(case, con, prog=None, log=None) -> dict:
     if prog:
         prog.set_total(len(FIGURES), "figures")
     summary = {"drawn": 0, "skipped": 0, "failed": 0}
+    has_tel = bool(dbm.one(con, "SELECT 1 FROM tel LIMIT 1"))
     for i, (no, slug, title, _sec, mod) in enumerate(FIGURES):
+        if getattr(mod, "TELECOM_ONLY", False) and not has_tel:
+            continue          # telecom figures exist only in cases with telecom returns
         if prog:
             prog.message(f"Drawing figure {no}: {title}")
             prog.check_cancel()

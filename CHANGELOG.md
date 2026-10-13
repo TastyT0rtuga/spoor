@@ -43,7 +43,9 @@
     10 new self-test checks; telecom unit and resume tests. 420,000 call records ran end to end in
     about 3.5 minutes (no AI) using under 0.5 GB.
 - Fix: the citation check failed records whose time came from separate date and time columns.
-- Text messages typed only as 'Text'/'SMS-MO'/'SMS-MT' are now classified as communication.
+- In telecom records, types written only as 'Text'/'SMS-MO'/'SMS-MT' are classified as communication.
+- Returns that are not telecom returns are read exactly as in 1.1.0's figures build: same records, findings,
+  report text and figure bytes (tested by comparing both versions on the demo returns).
 
 ## 1.0.0 — first public release
 

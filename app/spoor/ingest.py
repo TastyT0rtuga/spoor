@@ -13,7 +13,7 @@ from . import db as dbm
 from . import readers
 from .identifiers import EMAIL_RE, extract as extract_ids, phone_from_cell
 from .ipaddr import classify, find_ips, split_ip_port, subnet_key
-from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, propose_mapping,
+from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, is_tel_mapping, propose_mapping,
                       suggest_default_category)
 from .timeparse import TsParser, TzSpec, fmt_utc, infer_date_order, suggest_source_tz
 from .util import sha256_file, utc_now_str
@@ -255,8 +255,7 @@ class Ctx:
         self.tables = {t["name"]: t for t in cfg.get("tables", [])}
         self.imei_ctx = any("imei" in (h or "").lower() for t in cfg.get("tables", []) for h in (t.get("headers") or []))
         # tables read as call detail records / cell-site lists (any telecom column mapped)
-        self.tel_tables = {t["name"] for t in cfg.get("tables", [])
-                           if any(k in (t.get("mapping") or {}) for k in ("orig", "term", "cell", "cell_last", "duration", "imsi"))}
+        self.tel_tables = {t["name"] for t in cfg.get("tables", []) if is_tel_mapping(t.get("mapping") or {})}
 
     def parser(self, table: Optional[str], column: bool) -> TsParser:
         t = self.tables.get(table or "", {})
@@ -311,6 +310,11 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
                 v = _txt(cells.get(h), 200)
                 if v is not None:
                     tel[fld] = v
+        if tel and rec.table not in ctx.tel_tables:
+            # telecom columns in a table that is not read as telecom (an analyst's mapping): keep them as plain cells
+            for fld, v in tel.items():
+                extra[mapping[fld]] = v
+            tel = {}
         if tel:
             extra["_tel"] = tel
             if mapping.get("duration"):
@@ -406,7 +410,7 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     if rec.cells is None and ts_utc is None:
         category = "other"   # a free-text line without a time is an attribute (e.g. 'Recovery SMS: ...'), not an event
     else:
-        category = categorize(action, status, dflt or None)
+        category = categorize(action, status, dflt or None, telecom=rec.table in ctx.tel_tables)
     stats["categories"][category] += 1
     raw = rec.raw if rec.raw is not None else ""
     if len(raw) > ctx.raw_max:

@@ -17,6 +17,14 @@ FIELDS = ["ts", "date", "time", "tz", "ip", "port", "account", "action", "status
           "site_name", "imei", "imsi"]
 TEL_FIELDS = ("orig", "term", "duration", "cell", "cell_last", "lat", "lon", "azimuth", "beamwidth",
               "site_name", "imei", "imsi")
+
+
+def is_tel_mapping(m: dict) -> bool:
+    """A table is read as telecom records (CDRs or a cell-site list) only on a telecom-specific signal:
+    originating/terminating numbers, a cell/sector column, an IMSI, or an other party with a duration.
+    An IMEI, a session duration or coordinates alone (an app's login log) are not enough."""
+    return bool(m.get("orig") or m.get("term") or m.get("cell") or m.get("cell_last") or m.get("imsi")
+                or (m.get("counterparty") and m.get("duration")))
 FIELD_LABELS = {
     "ts": "Timestamp", "date": "Date (separate column)", "time": "Time (separate column)",
     "tz": "Per-row timezone", "ip": "IP address", "port": "Source port", "account": "Account / user",
@@ -280,6 +288,16 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
         mapping.pop(f)
         notes = [n for n in notes if not n.startswith(f + " = ")]
         notes.append(f"{f} column ignored: latitude and longitude must both be present")
+    if not is_tel_mapping(mapping):
+        # not a telecom table: read it exactly as before telecom support existed
+        for f in ("duration", "lat", "lon", "azimuth", "beamwidth", "site_name", "imei"):
+            h = mapping.pop(f, None)
+            if h is None:
+                continue
+            notes = [n for n in notes if not n.startswith(f + " = ")]
+            if f == "imei" and "device" not in mapping:
+                mapping["device"] = h
+                notes.append(f"device = column '{h}' (IMEI)")
     if "ts" not in mapping and ("date" in mapping) != ("time" in mapping):
         # a lone date column is still a (date-only) timestamp
         if "date" in mapping:
@@ -309,7 +327,9 @@ RE_CHANGE = re.compile(_W + r"(?:password|passcode|pin change|2fa|two ?factor|2 
                        r"(?:change|changed|update|updated|add|added|remove|removed) (?:email|e mail|phone|mobile|password|recovery|address|name|username|device|2fa|mfa)|"
                        r"account (?:recovery|update|updated|deactivat\w*|reactivat\w*|delet\w*|disabled|enabled|locked|unlocked|suspend\w*|restor\w*)|парол\w*|смена\w*)" + _E)
 RE_COMM = re.compile(_W + r"(?:call|calls|called|voice|sms|mms|text message|message|messages|messaged|chat|direct message|dm|voicemail|dialed|"
-                     r"mo call|mt call|moc|mtc|incoming call|outgoing call|missed call|text|texts|txt|sms mo|sms mt|volte|vowifi)" + _E)
+                     r"mo call|mt call|moc|mtc|incoming call|outgoing call|missed call)" + _E)
+# extra call-record wording, applied only to tables read as telecom records
+RE_COMM_TEL = re.compile(_W + r"(?:text|texts|txt|sms mo|sms mt|volte|vowifi)" + _E)
 RE_TXN = re.compile(_W + r"(?:deposit\w*|withdraw\w*|transfer\w*|payment\w*|purchase\w*|trade|traded|trades|buy|bought|sell|sold|"
                     r"send|sent|receive|received|transaction\w*|charge\w*|refund\w*|wire|ach|zelle|payout\w*|swap\w*|convert\w*)" + _E)
 SUCCESS_WORDS = {"success", "successful", "succeeded", "ok", "true", "pass", "passed", "allowed", "accepted",
@@ -336,9 +356,11 @@ def normalize_status(v) -> str:
     return ""
 
 
-def categorize(action, status: str, default: str | None) -> str:
+def categorize(action, status: str, default: str | None, telecom: bool = False) -> str:
     a = _clean(action)
     st = status or ""
+    if a and telecom and RE_COMM_TEL.search(a) and not (RE_LOGIN.search(a) or RE_LOGOUT.search(a) or RE_CHANGE.search(a)):
+        return "communication"
     if a:
         if RE_LOGOUT.search(a):
             return "logout"
@@ -387,10 +409,12 @@ def default_account_from(texts: list[tuple[str, str]]) -> tuple[str | None, str]
 
     Values containing spaces (a person's name, an address) are not treated as account identifiers."""
     lab = re.compile(r"(?:^|\b)(?:account|target|subscriber|user ?name|user|e-?mail|account id|uid|screen name|handle|login|"
-                     r"msisdn|mdn|логин|аккаунт|пользователь)\s*(?:identifier|id|name|number|no\.?|phone|msisdn|mdn|"
-                     r"telephone number|phone number)?\s*[:=#]\s*(.+)$", re.I)
+                     r"логин|аккаунт|пользователь)\s*(?:identifier|id|name)?\s*[:=#]\s*(.+)$", re.I)
+    # telecom returns name the target number ("Target Number: 7035550101", "MSISDN: ...")
+    tel_lab = re.compile(r"(?:^|\b)(?:target\s*(?:number|no\.?|phone|phone number|telephone number|msisdn|mdn)|msisdn|mdn)"
+                         r"\s*[:=#]\s*(.+)$", re.I)
     for cite, t in texts:
-        m = lab.search(t.strip())
+        m = lab.search(t.strip()) or tel_lab.search(t.strip())
         if m:
             v = re.split(r"[,;|()\[\]<>]", m.group(1).strip())[0].strip().strip("'\"")
             if v and " " not in v and len(v) >= 3:

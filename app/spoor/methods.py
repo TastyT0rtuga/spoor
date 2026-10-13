@@ -143,14 +143,14 @@ def methods_text(case, con) -> str:
          f"co-use window {p['coincidence_window_min']} min (priority); non-public addresses {'included' if p['link_include_nonpublic'] else 'excluded'}"],
         ["Identifiers", "inventory with validation; other e-mails and phones in each account's records", "-"],
         ["Counterparties", "most frequent counterparties per account; largest amounts (totals only within one currency)", "-"],
-        ["Calls, texts & cell sites", "telecom returns (call detail records and cell-site lists), any number at once: per-target "
+        ["Watchlists", "matches against analyst-supplied lists of IPs, ranges and identifiers", ", ".join(wl) or "none supplied"]]
+        + ([["Calls, texts & cell sites", "telecom returns (call detail records and cell-site lists), any number at once: per-target "
          "profile and top contacts; direct contact between targets; numbers in contact with 2+ targets and the target-by-target "
          "overlap table; IMEIs/IMSIs on 2+ targets and handset/SIM changes; co-location; KML (exports/telecom.kml)",
          f"co-location = two targets on cell sites within {int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m (or the same cell ID "
          f"in the same carrier's folder when there are no coordinates) within {p.get('tel_coloc_window_min', 15)} min; common "
          f"contact = {p.get('tel_common_min_targets', 2)}+ targets; KML draws up to {p.get('kml_max_points', 20000)} records, "
-         f"sector wedges {p.get('kml_sector_km', 1.0)} km long"],
-        ["Watchlists", "matches against analyst-supplied lists of IPs, ranges and identifiers", ", ".join(wl) or "none supplied"]]), ""]
+         f"sector wedges {p.get('kml_sector_km', 1.0)} km long"]] if dbm.get_meta(con, "telecom") else [])), ""]
     if dbm.get_meta(con, "telecom"):
         L += ["### Telecom returns", "",
               "- **Reading.** A table is read as call detail records when an originating/terminating number, cell, duration or IMSI "
@@ -207,6 +207,11 @@ def methods_text(case, con) -> str:
 def figures_section(con, p: dict) -> list[str]:
     from .figures import figure_rows
     figs = figure_rows(con)
+    tel_row = [["3. Target-contact chart", "Telecom target numbers either side; in the middle, one node per pair of targets in direct "
+              "contact (dashed outline) and one per number in contact with two or more targets (a common-contact finding). Each line is "
+              "labelled with that target's records with that number; a dashed line labelled 0 means the contact is only in the other "
+              "target's records. Sides are chosen as for figure 2. The contact shared by the most targets (3 or more) is the only accent.",
+              f"targets {p.get('figure_contacts_max_targets', 12)}, middle nodes {p.get('figure_contacts_max_contacts', 16)}"]] if dbm.get_meta(con, "telecom") else []
     L = ["## Figures", "",
          "Figures are drawn by Spoor itself from the findings and the case database - no language model is involved, and the same "
          "findings always give byte-identical SVG files. Each file embeds the fonts it uses (Atkinson Hyperlegible Next and Mono, "
@@ -224,19 +229,14 @@ def figures_section(con, p: dict) -> list[str]:
               "on the figure. UTC is on top and the case's local zone underneath. A silence longer than a quarter of the drawn time (and at "
               "least a week) is cut from the axis and labelled with its length in days (at most four axis pieces). Priority-1 findings "
               "whose cited records fall within 24 hours are marked at their earliest cited record and numbered in time order; for a "
-              "linked-account group the closest co-use, and for a telecom co-location finding the closest pair of records, is marked. Other priority-1 findings are listed on the figure as not tied to one moment.",
+              "linked-account group the closest co-use" + (", and for a telecom co-location finding the closest pair of records," if dbm.get_meta(con, "telecom") else "") + " is marked. Other priority-1 findings are listed on the figure as not tied to one moment.",
               f"lanes {p.get('figure_timeline_max_accounts', 12)}, markers {p.get('figure_timeline_max_markers', 12)}"],
              ["2. Account-IP link chart", "One panel per linked-group finding (largest first). Shared IPs in the middle, accounts either "
               "side - for up to 10 accounts every split between the sides is tried and the one with the fewest crossing lines kept. Each "
               "line joins an account to an IP it used and is labelled with that account's number of records on that IP. The closest co-use "
               "the finding reports is the only element in the accent colour.",
               f"panels {p.get('figure_links_max_clusters', 3)}, accounts per panel {p.get('figure_links_max_accounts', 12)}, "
-              f"IPs per panel {p.get('figure_links_max_ips', 16)}"],
-             ["3. Target-contact chart", "Telecom target numbers either side; in the middle, one node per pair of targets in direct "
-              "contact (dashed outline) and one per number in contact with two or more targets (a common-contact finding). Each line is "
-              "labelled with that target's records with that number; a dashed line labelled 0 means the contact is only in the other "
-              "target's records. Sides are chosen as for figure 2. The contact shared by the most targets (3 or more) is the only accent.",
-              f"targets {p.get('figure_contacts_max_targets', 12)}, middle nodes {p.get('figure_contacts_max_contacts', 16)}"]]), ""]
+              f"IPs per panel {p.get('figure_links_max_ips', 16)}"]] + tel_row), ""]
     if figs:
         rows = []
         for f in figs:

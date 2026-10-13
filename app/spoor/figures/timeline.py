@@ -313,6 +313,7 @@ def build(ctx: Ctx) -> Figure:
     if not stats:
         fig.status, fig.reason = "skipped", "no activity records with a usable timestamp"
         return fig
+    has_tel = bool(dbm.one(con, "SELECT 1 FROM tel LIMIT 1"))
     moments, longp = _moments(ctx, None)
     moments.sort(key=lambda m: (m["t0"], m["fid"]))
     drawable = sorted((a for a in stats if a in lane_f), key=lambda a: (a is None, -stats[a]["n"], _lane_name(a)))
@@ -550,7 +551,8 @@ def build(ctx: Ctx) -> Figure:
     if undrawn_m:
         notes.append("Priority-1 moments outside the drawn lanes: " + _fid_list(undrawn_m, 20) + ".")
     if longp:
-        notes.append("Other priority-1 findings concern IPs, identifiers, contacts, devices or longer periods rather than one moment and are not marked: "
+        notes.append(("Other priority-1 findings concern IPs, identifiers, contacts, devices or longer periods rather than one moment and are not marked: "
+                      if has_tel else "Other priority-1 findings concern IPs, identifiers or longer periods rather than one moment and are not marked: ")
                      + _fid_list(longp, 30) + ".")
     if excluded_dateonly:
         notes.append(f"{fmt_n(excluded_dateonly)} date-only record(s) are not drawn at this {unit.per()} resolution.")
@@ -558,7 +560,7 @@ def build(ctx: Ctx) -> Figure:
     if implaus:
         notes.append(f"{fmt_n(implaus)} record(s) with implausible years are not drawn.")
     notes.append(f"Bars count activity records per UTC {unit.per()} (logins, failed logins, logouts, account changes, registrations, "
-                 "transactions, messages, calls and texts) - the TIMELINE data; each lane cites the account's activity finding. "
+                 "transactions, messages" + (", calls and texts" if has_tel else "") + ") - the TIMELINE data; each lane cites the account's activity finding. "
                  "Hover any element for its finding and values.")
     note_lines = []
     for n_ in notes:

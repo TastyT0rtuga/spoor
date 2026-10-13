@@ -148,8 +148,7 @@ def figures_tests():
         a, con = _figure_case(tmp / "a", "Figure test", demo_returns_dir())
         figs = figure_rows(con)
         ha = hashes(a)
-        ok([f["status"] for f in figs] == ["ok", "ok", "skipped"] and len(ha) == 2,
-           f"demo: both figures drawn, the telecom chart skipped (no telecom returns) ({sorted(ha)})")
+        ok([f["status"] for f in figs] == ["ok", "ok"] and len(ha) == 2, f"demo: both figures drawn ({sorted(ha)})")
         for name in sorted(ha):
             svg = (a.report_dir / "figures" / name).read_text(encoding="utf-8")
             probs = check_svg(svg)
@@ -207,7 +206,7 @@ def figures_tests():
         s2, con2 = _figure_case(tmp / "s2", "One day", tmp / "stress" / "short", tz="Europe/Moscow")
         for cc, cn, label in ((s1, con1, "stress"), (s2, con2, "one-day")):
             fr = figure_rows(cn)
-            ok([f["status"] for f in fr][:2] == ["ok", "ok"], f"{label}: both figures drawn")
+            ok([f["status"] for f in fr] == ["ok", "ok"], f"{label}: both figures drawn")
             for f in [f for f in fr if f.get("file")]:
                 svg = (cc.report_dir / "figures" / f["file"]).read_text(encoding="utf-8")
                 probs = check_svg(svg)
@@ -255,6 +254,37 @@ def unit_telecom():
                            {"Cell ID": ["123"], "Latitude": ["38.1"], "Longitude": ["-77.2"], "Azimuth": ["120"]})
     ok(m.get("cell") == "Cell ID" and m.get("lat") == "Latitude" and m.get("lon") == "Longitude" and m.get("azimuth") == "Azimuth",
        "tower-list columns recognised")
+
+
+def telecom_isolation():
+    """Returns that are not telecom returns are read exactly as before telecom support existed."""
+    from spoor.mapping import categorize, default_account_from, propose_mapping
+    m, _ = propose_mapping(["Timestamp (UTC)", "User", "IP Address", "Event", "IMEI", "Session Duration", "Latitude", "Longitude"],
+                           {"Timestamp (UTC)": ["2024-04-01 10:00:00"], "User": ["a@b.com"], "IP Address": ["203.0.113.5"],
+                            "Event": ["Login"], "IMEI": ["353911104143632"], "Session Duration": ["00:12:00"],
+                            "Latitude": ["38.75"], "Longitude": ["-77.47"]})
+    ok(m.get("device") == "IMEI" and not any(k in m for k in ("imei", "duration", "lat", "lon")),
+       "a login log with IMEI, duration and coordinate columns is not read as telecom (IMEI stays the device)")
+    ok(default_account_from([("L2", "Account Number: 12345678")])[0] is None, "'Account Number:' in a bank preamble is not a default account")
+    ok(categorize("Sent text", "", None) == "transaction" and categorize("Sent text", "", None, telecom=True) == "communication",
+       "call-record wording only applies to telecom tables")
+    from spoor.selftest import demo_returns_dir
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-iso-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        _c, con = _figure_case(tmp, "Isolation", demo_returns_dir())
+        n_tel = con.execute("SELECT COUNT(*) FROM tel").fetchone()[0]
+        n_f = con.execute("SELECT COUNT(*) FROM findings WHERE module='telecom'").fetchone()[0]
+        n_fig = con.execute("SELECT COUNT(*) FROM figures WHERE slug='contacts'").fetchone()[0]
+        ok(n_tel == 0 and n_f == 0 and n_fig == 0 and not (_c.exports_dir / "telecom.kml").exists(),
+           "the non-telecom demo produces no telecom records, findings, figure or KML")
+    finally:
+        for k, v_ in old_env.items():
+            if v_ is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v_
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def telecom_tests():
@@ -417,6 +447,7 @@ def main():
     print("\n[figures]")
     figures_tests()
     print("\n[telecom]")
+    telecom_isolation()
     telecom_tests()
     print("\n[self-test]")
     from spoor.selftest import selftest

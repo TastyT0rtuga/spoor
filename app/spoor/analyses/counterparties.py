@@ -12,7 +12,8 @@ class Counterparties(Analysis):
 
     def run(self):
         # call/text records are covered by 'Calls, texts & cell sites'
-        self.nt = "id NOT IN (SELECT event_id FROM tel)"
+        has_tel = bool(self.one("SELECT 1 FROM tel LIMIT 1"))
+        self.nt = "id NOT IN (SELECT event_id FROM tel)" if has_tel else "1=1"
         n_cp = self.one(f"SELECT COUNT(*) FROM events WHERE counterparty IS NOT NULL AND {self.nt}") or 0
         n_amt = self.one("SELECT COUNT(*) FROM events WHERE amount IS NOT NULL") or 0
         if not n_cp and not n_amt:
@@ -41,7 +42,7 @@ class Counterparties(Analysis):
                           "tables": [{"title": "Counterparties", "columns": ["counterparty", "records", "amount_total", "first_utc", "last_utc", "direction", "currency"],
                                       "rows": [[t["counterparty"], t["n"], t["amt"], t["f"], t["l"], t["dirs"], t["cur"]] for t in top],
                                       "total_rows": a["cps"]}]},
-                         sql=("SELECT counterparty, COUNT(*), SUM(amount) FROM ev WHERE id NOT IN (SELECT id FROM calls) AND " +
+                         sql=("SELECT counterparty, COUNT(*), SUM(amount) FROM ev WHERE " + ("id NOT IN (SELECT id FROM calls) AND " if has_tel else "") +
                               (f"account={sq(acc)}" if acc != "(no account)" else "account IS NULL") + " GROUP BY 1 ORDER BY 2 DESC"),
                          evidence=ev, priority=2, sort_key=f"2{10**9 - a['n']:010d}{acc}", export="exports/counterparties.csv")
         if n_amt:

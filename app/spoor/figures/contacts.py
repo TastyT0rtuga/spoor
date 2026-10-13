@@ -12,6 +12,7 @@ from .common import Ctx, Figure, Ref, fmt_n
 from .linkchart import _arrange, _crossings, _ports
 from .svg import ACCENT, INK, MUTED, PAPER, RULE, SOFT, Svg, c4, f4, fit, text_width, wrap
 
+TELECOM_ONLY = True
 W = 800
 MARGIN = 24
 ACC_W = 208

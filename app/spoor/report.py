@@ -13,6 +13,7 @@ from . import __version__
 from . import db as dbm
 from .charts import bar_chart, daily_chart
 from .findings import CATEGORY_ORDER
+from .mapping import is_tel_mapping
 from .util import fmt_bytes, fmt_int, local_now_str, md_code, md_escape, utc_now_str
 
 try:
@@ -449,7 +450,7 @@ class Report:
                 m = t.get("mapping") or {}
                 tel = [k for k in ("orig", "term", "counterparty", "direction", "cell", "cell_last", "duration", "lat", "lon",
                                    "azimuth", "imei", "imsi") if m.get(k)]
-                if s["status"] == "ingested" and any(k in m for k in ("orig", "term", "cell", "cell_last", "duration", "imsi")):
+                if s["status"] == "ingested" and is_tel_mapping(m):
                     L.append(f"- [ ] {s['label']} / {md_escape(t.get('name'))}: read as telecom records - check the columns: "
                              + md_escape(", ".join(f"{k} = '{m[k]}'" for k in tel)) + ".")
         for s in self.sources:
