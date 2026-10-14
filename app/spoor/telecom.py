@@ -81,6 +81,9 @@ def _int(v) -> Optional[int]:
     return None
 
 
+ECI_MAX = (1 << 28) - 1      # an LTE ECI is 28 bits: 20-bit eNodeB + 8-bit cell
+
+
 def parse_eci(v) -> tuple[Optional[int], str]:
     """(ECI, form) from any of the spellings in the module docstring; (None, '') when not an LTE cell identity."""
     if v in (None, ""):
@@ -103,13 +106,15 @@ def parse_eci(v) -> tuple[Optional[int], str]:
         if cell < 256:
             return enb * 256 + cell, "MCC-MNC-eNodeB-cell"
         return None, ""
+    if len(parts) == 2 and re.fullmatch(r"0\d{6}", parts[0]) and parts[1].isdigit() and int(parts[1]) < 256:
+        return int(parts[0]) * 256 + int(parts[1]), "eNodeB-cell"     # zero-padded 7-digit eNodeB (Sprint lists)
     if len(parts) == 1 and s.isdigit():
         if len(s) == 15 and s[0] in "234567":
             return int(s[6:]), "15-digit ECGI (MCC MNC ECI)"
         n = int(s)
-        if n >= 256:
+        if 256 <= n <= ECI_MAX:
             return n, "ECI"
-    return None, ""
+    return None, ""     # includes 5G NR identities (36-bit NCI / 17-digit NCGI), which are not LTE ECIs
 
 
 def parse_cell_location(v) -> Optional[dict]:
@@ -221,7 +226,7 @@ def fnum(v, lo, hi) -> Optional[float]:
     if v in (None, ""):
         return None
     try:
-        x = float(str(v).strip().replace(",", "."))
+        x = float(str(v).strip().lstrip("'").replace(",", "."))
     except ValueError:
         return None
     return x if lo <= x <= hi and not math.isnan(x) else None
@@ -272,7 +277,7 @@ def cell_identity(tel: dict, hdr: dict, tower: bool) -> dict:
 
 TEL_COLS = ["event_id", "source_id", "target", "target_basis", "other", "other_raw", "dir", "kind", "ts_epoch", "ts_utc",
             "duration_s", "cell", "cell_last", "eci", "enb", "lat", "lon", "azimuth", "beamwidth", "site_name", "loc_basis",
-            "loc_event_id", "imei", "imsi", "dev_lat", "dev_lon", "dev_conf", "src_kind", "section", "note"]
+            "loc_event_id", "imei", "imsi", "dev_lat", "dev_lon", "dev_conf", "src_kind", "section", "note", "loc_ref"]
 
 
 def _tel_events(con, source_id: Optional[int] = None):
@@ -471,7 +476,7 @@ def build(con, params: dict, prog=None, log=None) -> dict:
                          r["ts_epoch"], r["ts_utc"], dur, ident["label"], last["label"], ident["eci"], ident["enb"],
                          lat, lon, az, bw, name, basis, r["id"] if basis else None, imei, imsi, dev_lat, dev_lon,
                          (str(tel.get("conf"))[:40] if tel.get("conf") not in (None, "") else None), src_kind,
-                         ex.get("_section"), "; ".join(notes) or None))
+                         ex.get("_section"), "; ".join(notes) or None, None))
         stats["records"] += 1
         if len(tel_rows) >= 5000:
             _flush(con, tel_rows, site_rows)
@@ -550,9 +555,11 @@ def _folder(path: str) -> str:
 def _resolve_locations(con, params: dict, stats: dict) -> None:
     """Give each unlocated record the coordinates of its first cell from a tower list: by ECI when the record
     has one, else by the cell label as written. A list in the same folder as the record wins; otherwise a cell
-    is matched only if every list that names it agrees to within the same-site distance."""
+    is matched only if every list that names it agrees to within the same-site distance. Records still unlocated
+    are then looked up in the reference cell-site library (cellsites/, see cellref.py) when one is installed."""
     agree_km = float(params.get("tel_same_site_km", 0.1))
-    folders = {r[0]: _folder(r[1]) for r in con.execute("SELECT id, path FROM sources")}
+    paths = {r[0]: r[1] for r in con.execute("SELECT id, path FROM sources")}
+    folders = {k: _folder(v) for k, v in paths.items()}
     by_eci: dict = collections.defaultdict(list)
     by_label: dict = collections.defaultdict(list)
     for r in con.execute("SELECT cell, source_id, event_id, origin, site_name, lat, lon, azimuth, beamwidth, eci FROM cell_sites "
@@ -561,26 +568,23 @@ def _resolve_locations(con, params: dict, stats: dict) -> None:
             by_eci[r[9]].append(r)
         else:
             by_label[r[0]].append(r)
-    if not by_eci and not by_label:
-        for (n,) in con.execute("SELECT COUNT(*) FROM tel WHERE lat IS NULL AND (cell IS NOT NULL OR eci IS NOT NULL)"):
-            if n:
-                stats["unlocated_reasons"]["no tower list loaded"] += n
-        n = dbm.one(con, "SELECT COUNT(*) FROM tel WHERE lat IS NULL AND cell IS NULL AND eci IS NULL") or 0
-        if n:
-            stats["unlocated_reasons"]["no cell on the record"] += n
-        return
+    have_lists = bool(by_eci or by_label)
     upd = []
     conflicts = {}
+    pending = []          # (event_id, source_id, cell, eci, reason) - not placed by the case's own lists
     for eid, sid, cell, eci in con.execute("SELECT event_id, source_id, cell, eci FROM tel WHERE lat IS NULL").fetchall():
-        if eci is not None:
-            cands, key = by_eci.get(eci) or [], f"ECI {eci}"
-        elif cell:
-            cands, key = by_label.get(cell) or [], cell
-        else:
+        if eci is None and not cell:
             stats["unlocated_reasons"]["no cell on the record"] += 1
             continue
+        if not have_lists:
+            pending.append((eid, sid, cell, eci, "no tower list loaded"))
+            continue
+        if eci is not None:
+            cands, key = by_eci.get(eci) or [], f"ECI {eci}"
+        else:
+            cands, key = by_label.get(cell) or [], cell
         if not cands:
-            stats["unlocated_reasons"]["cell not in any tower list"] += 1
+            pending.append((eid, sid, cell, eci, "cell not in any tower list"))
             continue
         same = [c for c in cands if folders.get(c[1]) == folders.get(sid)]
         pick, basis = None, None
@@ -596,9 +600,10 @@ def _resolve_locations(con, params: dict, stats: dict) -> None:
                 stats["unlocated_reasons"]["tower lists disagree on this cell"] += 1
                 conflicts[key] = sorted({f"{c[5]:.5f},{c[6]:.5f}" for c in cands})
                 continue
-        upd.append((pick[5], pick[6], pick[7], pick[8], pick[4], basis, pick[2], eid))
+        upd.append((pick[5], pick[6], pick[7], pick[8], pick[4], basis, pick[2], None, eid))
+    _resolve_from_library(con, params, stats, pending, paths, agree_km, upd, conflicts)
     con.executemany("UPDATE tel SET lat=?, lon=?, azimuth=COALESCE(azimuth, ?), beamwidth=COALESCE(beamwidth, ?), "
-                    "site_name=COALESCE(site_name, ?), loc_basis=?, loc_event_id=? WHERE event_id=?", upd)
+                    "site_name=COALESCE(site_name, ?), loc_basis=?, loc_event_id=?, loc_ref=? WHERE event_id=?", upd)
     stats["conflicts"] = [{"cell": k, "coordinates": v} for k, v in sorted(conflicts.items())][:50]
     # records located from coordinates on the record itself often carry no azimuth / beamwidth: take them from
     # the tower list entry for the same ECI (the same folder first), keeping any value the record gives
@@ -614,3 +619,69 @@ def _resolve_locations(con, params: dict, stats: dict) -> None:
     con.executemany("UPDATE tel SET azimuth=COALESCE(azimuth, ?), beamwidth=COALESCE(beamwidth, ?) WHERE event_id=?", fill)
     stats["sector_from_list"] = len(fill)
     con.commit()
+
+
+def _resolve_from_library(con, params: dict, stats: dict, pending: list, paths: dict, agree_km: float,
+                          upd: list, conflicts: dict) -> None:
+    """Place records the case's own lists could not, from the reference cell-site library (appends to upd)."""
+    from . import cellref
+
+    lib = None
+    if params.get("tel_reference_library", True):
+        lib = cellref.Library(Path(params["tel_library_dir"]) if params.get("tel_library_dir") else None)
+        if not lib.available:
+            lib = None
+    if lib is None:
+        for *_, reason in pending:
+            stats["unlocated_reasons"][reason] += 1
+        return
+    forced = cellref.norm_carrier(str(params.get("tel_carrier") or ""))
+    hints: dict = {}
+    lstats = {"matched": 0, "by_carrier": collections.Counter(), "carrier_basis": {}, "no_carrier_agreed": 0}
+    try:
+        for eid, sid, cell, eci, reason in pending:
+            if sid not in hints:
+                if forced:
+                    hints[sid] = (forced, "case setting tel_carrier")
+                else:
+                    hints[sid] = cellref.carrier_hint(paths.get(sid) or "")
+                if hints[sid][0]:
+                    lstats["carrier_basis"][paths.get(sid, "")[-120:]] = f"{hints[sid][0]} ({hints[sid][1]})"
+            carrier = hints[sid][0]
+            if eci is not None:
+                cands = lib.by_eci(eci)
+                if carrier:
+                    cands = [c for c in cands if c["carrier"] == carrier]
+                how = "by ECI"
+            elif carrier and cell:
+                cands, how = lib.by_label(carrier, cell), "by cell label"
+            else:
+                cands, how = [], ""
+            if not cands:
+                stats["unlocated_reasons"]["cell not in any tower list or the reference library" if not carrier
+                                          else f"cell not in the {carrier} reference list"] += 1
+                continue
+            ref = cands[0]
+            if not all(km(ref["lat"], ref["lon"], c["lat"], c["lon"]) <= agree_km for c in cands):
+                carriers = sorted({c["carrier"] for c in cands})
+                why = ("reference lists of several carriers name this ECI - set the carrier (tel_carrier)"
+                       if len(carriers) > 1 else "reference lists disagree on this cell")
+                stats["unlocated_reasons"][why] += 1
+                conflicts[f"ECI {eci}" if eci is not None else cell] = sorted(
+                    {f"{c['lat']:.5f},{c['lon']:.5f} ({c['carrier']})" for c in cands})[:8]
+                continue
+            basis = (f"reference library, {ref['carrier']} list ({how}"
+                     + ("" if carrier else "; carrier not known - every list naming it agrees") + ")")
+            if not carrier:
+                lstats["no_carrier_agreed"] += 1
+            cite = f"cellsites/{ref['file']} {ref['loc']}"[:300]
+            upd.append((ref["lat"], ref["lon"], ref["azimuth"], ref["beamwidth"], ref["site"], basis, None, cite, eid))
+            lib.note_used(ref)
+            lstats["matched"] += 1
+            lstats["by_carrier"][ref["carrier"]] += 1
+        stats["library"] = {"path": str(lib.path), "matched": lstats["matched"],
+                            "by_carrier": dict(lstats["by_carrier"]), "no_carrier_agreed": lstats["no_carrier_agreed"],
+                            "carrier_basis": dict(list(lstats["carrier_basis"].items())[:40]),
+                            "files_used": sorted(lib.used_files.values(), key=lambda u: -u["records"])[:60]}
+    finally:
+        lib.close()

@@ -30,6 +30,8 @@ DEFAULT_PARAMS = {
     "tel_top_contacts": 10,          # contacts listed per target
     "tel_common_min_targets": 2,     # a contact shared by at least N targets is reported
     "tel_scene_gap_hours": 3,        # tower-dump records more than N hours apart belong to different scenes
+    "tel_reference_library": True,   # look up cells the case's own lists miss in the cellsites/ library (if installed)
+    "tel_carrier": "",               # carrier of the case's returns (e.g. "Verizon"); blank = from each file's name
     "kml_max_points": 20000,         # call records drawn in the KML (all of them are in the CSV export)
     "kml_sector_km": 1.0,            # length of the drawn sector wedges (a drawing aid - NOT a coverage estimate)
     # output limits (the full data always goes to CSV exports)

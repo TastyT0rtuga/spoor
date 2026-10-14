@@ -84,6 +84,11 @@ def main(argv=None):
     s.add_argument("--job", type=int, required=True)
     sub.add_parser("llm", help="check the local model server")
     sub.add_parser("selftest", help="run the built-in end-to-end test on fictional data")
+    s = sub.add_parser("cellsites", help="index or query your reference cell-site lists (the cellsites/ folder)")
+    s.add_argument("action", choices=["index", "status", "lookup"], nargs="?", default="status")
+    s.add_argument("value", nargs="?", help="lookup: an ECI in any spelling (decimal, ECGI, MCC-MNC-eNB-cell)")
+    s.add_argument("--dir", help="library folder (default: cellsites/ next to the program)")
+    s.add_argument("--rebuild", action="store_true", help="index: re-read every list")
     s = sub.add_parser("demo", help="create a case from the bundled fictional demo returns")
     s.add_argument("--run", action="store_true")
     a = ap.parse_args(argv)
@@ -194,6 +199,34 @@ def main(argv=None):
     elif cmd == "selftest":
         from .selftest import selftest
         sys.exit(0 if selftest() else 1)
+    elif cmd == "cellsites":
+        from . import cellref
+        folder = Path(a.dir).resolve() if a.dir else None
+        if a.action == "index":
+            r = cellref.index(folder, force=a.rebuild)
+            print(f"indexed: {r['lists']} lists, {r['cells']:,} cells")
+            for k, v in sorted(r["carriers"].items()):
+                print(f"  {k:28} {v['lists']:4} lists {v['cells']:>12,} cells")
+        elif a.action == "status":
+            r = cellref.status(folder)
+            if not r["indexed"]:
+                print(f"no index - put carrier cell-site lists in {folder or cellref.library_dir()} and run: spoor cellsites index")
+            else:
+                print(f"{r['path']}: {r['lists']} lists, {r['cells']:,} cells")
+                for k, v in sorted(r["carriers"].items()):
+                    print(f"  {k:28} {v['lists']:4} lists {v['cells']:>12,} cells")
+        else:
+            from .telecom import parse_eci
+            eci, form = parse_eci(a.value)
+            if eci is None:
+                sys.exit(f"'{a.value}' is not an LTE cell identity")
+            lib = cellref.Library(folder)
+            if not lib.available:
+                sys.exit("no index - run: spoor cellsites index")
+            print(f"ECI {eci} (eNodeB {eci // 256}, cell {eci % 256}; read as {form})")
+            for c in lib.by_eci(eci):
+                print(f"  {c['carrier']:24} {c['lat']:.6f},{c['lon']:.6f} az {c['azimuth']} bw {c['beamwidth']}  "
+                      f"{c['site'] or ''}  [{c['file']} {c['loc']}]")
     elif cmd == "demo":
         from .selftest import make_demo_case
         c = make_demo_case(run=a.run)

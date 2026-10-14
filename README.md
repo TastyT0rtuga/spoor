@@ -232,7 +232,10 @@ and coordinates on each row when a carrier writes them. Report text files with s
 a data table, one section per tower-dump search) are read table by table. Every LTE cell is reduced to its
 ECI (eNodeB x 256 + cell) however it is written - decimal, hex ECGI, MCC-MNC-eNodeB-cell, eNodeB + sector
 column, or AT&T's bracketed CellLocation - and matched to tower lists on that, preferring the list in the same
-folder (the same carrier). The target is the account column, else the number named in the preamble, else the
+folder (the same carrier). Spoor ships no carrier tower lists, but if you have them you can keep them in a
+`cellsites/` folder next to the program (`spoor-cli.bat cellsites index`, see `cellsites\README.txt`): records
+the return's own lists don't place are then looked up there by ECI in the right carrier's list (from the
+case setting or the return's file name), cited to the list file and row. The target is the account column, else the number named in the preamble, else the
 number in the file name (carriers name call-record files after the target), else the number on one end of
 80%+ of the records; the last two are priority-1 assumptions to verify. Timing-advance reports, named after
 the IMSI, are filed under the number whose call records show that IMSI. Numbers are compared in E.164

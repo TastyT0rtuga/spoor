@@ -2,6 +2,19 @@
 
 ## 1.1.0 — in development
 
+- **Reference cell-site library (bring your own lists).** Put carrier tower lists (CSV/TXT/XLSX/XLS/ZIP)
+  in `cellsites/` and run `spoor cellsites index`; records the case's own lists don't place are matched
+  by ECI to the list of the return's carrier (case setting `tel_carrier`, else the return's file name:
+  CDR_Mediations / TWD_ / TimingAdvance = T-Mobile, ReportAU / ReportTOWER = AT&T, CellSites-CDR / VoLTE =
+  Verizon, CXM_HDA = UScellular). An ECI named by several carriers at different places is left unlocated
+  unless the carrier is known. Each placed record cites the list file and row (`calls.loc_cite`);
+  REVIEW.md lists every list used with its SHA-256; METHODS.md describes the rules. `spoor cellsites
+  status|lookup <ECI>`. No lists are shipped; `cellsites/` is git-ignored apart from its README.
+- Tower-list reading: 5G NCI/NCGI values are no longer mistaken for LTE ECIs (ECI is capped at 28
+  bits); Sprint's zero-padded `eNodeB-cell` form; coordinates written with Excel's leading apostrophe;
+  AT&T `SECTOR_ORIENTATION` and `ANT_LAT`/`ANT_LONG`/`ANT_ORIENTATION`/`ANT_BEAMWIDTH` columns; azimuth,
+  beamwidth and coordinate columns are judged on their non-NULL values.
+
 - **Figures stage** (after Report, before Verify): deterministic SVG figures drawn from the findings,
   no language model involved; same findings in, byte-identical SVG out.
   - Figure 1, activity timeline: one lane per account, banded bars per UTC bin (minute to year,

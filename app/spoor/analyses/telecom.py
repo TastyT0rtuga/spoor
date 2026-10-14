@@ -85,6 +85,14 @@ class Telecom(Analysis):
         if st.get("cross_folder_matches"):
             bits.append(f"{plural(st['cross_folder_matches'], 'record')} were located from a tower list in a different folder "
                         f"(cell ID match only).")
+        lib = st.get("library") or {}
+        if lib.get("matched"):
+            bits.append(f"{plural(lib['matched'], 'record')} were located from the reference cell-site library ("
+                        + ", ".join(f"{k}: {fmt_num(v)}" for k, v in sorted(lib.get("by_carrier", {}).items()))
+                        + f"; {plural(len(lib.get('files_used') or []), 'list')}): these lists did not come with the return - "
+                        f"check that the list's date covers the record dates and that the carrier is right"
+                        + (f"; {fmt_num(lib['no_carrier_agreed'])} of them had no known carrier and were placed only because "
+                           f"every library list naming the cell agrees" if lib.get("no_carrier_agreed") else "") + ".")
         if st.get("conflicts"):
             bits.append(f"{plural(len(st['conflicts']), 'cell ID')} have different coordinates in different tower lists and were not located.")
         for lab, v in sorted(inferred.items()):
@@ -123,7 +131,8 @@ class Telecom(Analysis):
         if dsrc:
             bits.append(f"{plural(sk.get('dump', 0), 'record')} come from tower dumps ({', '.join(sorted(dsrc))}): they are about "
                         f"every phone on the dumped towers and are reported in the tower-dump findings, not as targets.")
-        prio = 1 if (inferred or st.get("conflicts") or st.get("no_target") or fn or st.get("imei_sci")) else 2
+        prio = 1 if (inferred or st.get("conflicts") or st.get("no_target") or fn or st.get("imei_sci")
+                     or lib.get("matched")) else 2
         self.add("telecom_quality", "Telecom records: how they were read", " ".join(bits),
                  {"values": {"records": n, "targets": self.targets[:50], "target_count": len(self.targets), "located": loc,
                              "unlocated": unl, "unlocated_reasons": reasons, "tower_rows": st.get("tower_rows", 0),
@@ -132,7 +141,7 @@ class Telecom(Analysis):
                              "neither_end_target": st.get("neither_end_target", 0), "filename_targets": fn,
                              "imsi_targets": st.get("imsi_targets") or {}, "imei_sci": st.get("imei_sci", 0),
                              "fwd_legs": st.get("fwd_legs", 0), "src_kinds": sk, "dump_sources": dsrc,
-                             "eci_forms": st.get("eci_forms") or {}},
+                             "eci_forms": st.get("eci_forms") or {}, "library": lib},
                   "tables": [{"title": "Cell IDs with conflicting coordinates", "columns": ["cell", "coordinates"],
                               "rows": [[c["cell"], "; ".join(c["coordinates"])] for c in st.get("conflicts", [])[: self.trows]],
                               "total_rows": len(st.get("conflicts", []))}] if st.get("conflicts") else []},

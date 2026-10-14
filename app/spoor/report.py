@@ -441,8 +441,16 @@ class Report:
             if f["kind"] == "telecom_quality":
                 v = (f.get("facts") or {}).get("values", {})
                 if v.get("inferred_targets") or v.get("cross_folder_matches") or v.get("no_target") or v.get("unlocated") \
-                        or v.get("filename_targets") or v.get("imsi_targets") or v.get("imei_sci"):
+                        or v.get("filename_targets") or v.get("imsi_targets") or v.get("imei_sci") \
+                        or (v.get("library") or {}).get("matched"):
                     assumptions.append(f)
+                lib = v.get("library") or {}
+                for src_path, cb in sorted((lib.get("carrier_basis") or {}).items()):
+                    L.append(f"- [ ] Reference cell-site library: carrier taken as **{md_escape(cb)}** for "
+                             f"{md_escape(src_path)}.")
+                for u in lib.get("files_used") or []:
+                    L.append(f"- [ ] Reference cell-site list used for {u['records']} record(s): cellsites/{md_escape(u['file'])} "
+                             f"({md_escape(u['carrier'])}, SHA-256 {u['sha256'][:16]}...) - confirm its date covers the records.")
         for f in assumptions:
             L.append(f"- [ ] {flink(f['fid'])} {md_escape(f['statement'])}")
         for s in self.sources:

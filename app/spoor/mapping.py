@@ -120,18 +120,20 @@ SYN: dict[str, list[str]] = {
     "subject": ["number associated w tower", "number associated with tower", "phonenumber", "phone number",
                 "mobile number", "target phone number", "phone"],
     "lat": ["latitude", "lat", "tower latitude", "site latitude", "cell latitude", "tower lat", "site lat", "lat dd",
-            "latitude dd", "e 911 latitude degrees"],
+            "latitude dd", "e 911 latitude degrees", "ant lat", "antenna latitude", "antenna lat"],
     "lon": ["longitude", "long", "lon", "lng", "tower longitude", "site longitude", "cell longitude", "tower long",
-            "tower lon", "site lon", "site long", "long dd", "longitude dd", "e 911 longitude degrees"],
+            "tower lon", "site lon", "site long", "long dd", "longitude dd", "e 911 longitude degrees", "ant long", "ant lon",
+            "antenna longitude", "antenna long"],
     "dev_lat": ["end latitude", "end lat", "device latitude", "estimated latitude", "location latitude", "ping latitude"],
     "dev_lon": ["end longitude", "end long", "end lon", "device longitude", "estimated longitude", "location longitude",
                 "ping longitude"],
     "conf": ["confidence", "conf", "uncertainty", "uncertainty radius", "accuracy", "confidence radius", "error radius",
              "horizontal accuracy"],
     "azimuth": ["azimuth", "azm", "az", "sector azimuth", "orientation", "azimuth deg", "antenna azimuth", "bearing",
-                "tower azimuth", "1st tower azimuth"],
+                "tower azimuth", "1st tower azimuth", "sector orientation", "ant orientation", "antenna orientation",
+                "azimuth degrees"],
     "beamwidth": ["beamwidth", "beam width", "horizontal beamwidth", "hbw", "beam width deg", "antenna beamwidth",
-                  "antenna h bw", "horizontal bw", "h bw"],
+                  "antenna h bw", "horizontal bw", "h bw", "ant beamwidth", "horizontal beamwidth deg"],
     "site_name": ["site name", "tower name", "cell site name", "cell name", "sector name", "site address", "tower address",
                   "1st tower address", "street address"],
     "imei": ["imei", "imeisv", "imei sv", "device imei", "meid", "esn", "imei number", "handset imei",
@@ -177,6 +179,12 @@ _NULLISH = {"n/a", "na", "null", "none", "-", "--", "nan", "(null)", "#n/a", "0"
 _MIDNIGHT_RE = re.compile(r"(?:^|\D)\d{4}-\d\d-\d\d(?:[ T]00:00(?::00(?:\.0+)?)?)?$|^\d{1,2}/\d{1,2}/\d{2,4}(?: 0?0:00(?::00)?(?: ?AM)?)?$")
 _STATUS_WORDS = re.compile(r"^(?:success\w*|succeeded|ok|true|false|fail\w*|denied|rejected|invalid|error|blocked|"
                            r"allowed|accepted|approved|declined|completed|pending|yes|no|pass|passed)$", re.I)
+
+
+def _share(e: dict, k: str) -> float:
+    """Share of the non-null values ('NULL', 'N/A', ...) that show evidence k."""
+    nn = 1.0 - e.get("nullish", 0)
+    return e.get(k, 0) / nn if nn > 0.05 else 0.0
 
 
 def value_evidence(values: list) -> dict[str, float]:
@@ -227,11 +235,12 @@ def value_evidence(values: list) -> dict[str, float]:
             ev["status"] += 1
         if phone_from_cell(s):
             ev["phone"] += 1
-        if _DECIMAL.match(s):
-            x = float(s)
-            if abs(x) <= 90 and "." in s:
+        sd = s[1:] if s.startswith("'") else s       # Excel text-forcing apostrophe ('-104.6)
+        if _DECIMAL.match(sd):
+            x = float(sd)
+            if abs(x) <= 90 and "." in sd:
                 ev["lat"] += 1
-            if abs(x) <= 180 and "." in s:
+            if abs(x) <= 180 and "." in sd:
                 ev["lon"] += 1
             if 0 <= x <= 360:
                 ev["deg"] += 1
@@ -283,16 +292,16 @@ def propose_mapping(headers: list[str], samples: dict[str, list]) -> tuple[dict,
                 if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5 or e.get("nullish", 0) >= 0.95:
                     s = 0
             elif f in ("dev_lat", "dev_lon"):
-                s = s if e.get(f[4:], 0) >= 0.8 else 0
+                s = s if _share(e, f[4:]) >= 0.8 else 0
             elif f in ("cell", "cell_last"):
                 if e.get("ip", 0) > 0.5 or e.get("ts", 0) > 0.5 or e.get("phone", 0) >= 0.8 or e.get("email", 0) > 0.5:
                     s = 0       # a column named 'Cell' holding phone numbers is a mobile number, not a cell site
                 elif e.get("nullish", 0) >= 0.95:
                     s = 0       # a cell column that is 'N/A' on every row (the cell is in another column)
             elif f in ("lat", "lon"):
-                s = s if e.get(f, 0) >= 0.8 else 0
+                s = s if _share(e, f) >= 0.8 else 0
             elif f in ("azimuth", "beamwidth"):
-                s = s if e.get("deg", 0) >= 0.8 else 0
+                s = s if _share(e, "deg") >= 0.8 else 0
             scores[f][h] = s
     mapping: dict[str, str] = {}
     notes: list[str] = []

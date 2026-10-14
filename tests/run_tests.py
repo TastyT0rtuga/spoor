@@ -88,7 +88,8 @@ def unit_markdown():
     ok('data-cite="S03:L12"' in h, "citations become clickable in the viewer")
 
 
-def _figure_case(root: Path, name: str, folder: Path, tz: str = "America/New_York", params=None, interrupt=None):
+def _figure_case(root: Path, name: str, folder: Path, tz: str = "America/New_York", params=None, interrupt=None,
+                 case_params=None):
     """Create a case in its own folder and run it (optionally interrupted once, then resumed)."""
     root.mkdir(parents=True, exist_ok=True)
     os.environ["SPOOR_CASES"] = str(root / "cases")
@@ -97,6 +98,9 @@ def _figure_case(root: Path, name: str, folder: Path, tz: str = "America/New_Yor
     from spoor.case import create_case, register_path
     from spoor.jobs import start_job
     c = create_case(name, "t", "", tz)
+    if case_params:
+        c.info["params"] = dict(c.info.get("params") or {}, **case_params)
+        c.save()
     con = c.db()
     register_path(c, con, str(folder))
     restore = None
@@ -492,6 +496,92 @@ def telecom_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def cellref_tests():
+    """Reference cell-site library (fictional lists): indexing, carrier choice, ECI collisions between carriers."""
+    from spoor import cellref
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-cellref-"))
+    old = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS", "SPOOR_CELLSITES")}
+    try:
+        lib = tmp / "cellsites"
+        (lib / "Verizon_Test").mkdir(parents=True)
+        (lib / "TMOB_Test").mkdir(parents=True)
+        # ECI 1000001 is in both carriers' lists at different places; 2000002 only Verizon; 3000003 both, same place
+        (lib / "Verizon_Test" / "Region_CALEA.V0.csv").write_text(
+            "SITE NUMBER,LATITUDE,LONGITUDE,SECTOR,AZIMUTH (DEG),ANTENNA H-BW (DEG),ENODEB ID,ECGI\n"
+            f"0101,40.100000,-75.100000,1,30,65,{1000001 // 256},311480-{1000001:07X}\n"
+            f"0102,40.200000,-75.200000,2,150,65,{2000002 // 256},311480-{2000002:07X}\n"
+            f"0103,40.300000,-75.300000,3,270,65,{3000003 // 256},311480-{3000003:07X}\n"
+            "0104,40.400000,-75.400000,1,90,65,,\n", encoding="utf-8")
+        (lib / "TMOB_Test" / "TEST-2025-01.csv").write_text(
+            "Market_Name,Cell_ID,NodeB_ID,CGI,Azimuth,Site_Latitude,Site_Longitude,Horizontal_BW,List_Date\n"
+            f"TEST,{1000001 % 256},{1000001 // 256},1000001,NULL,41.500000,-76.500000,NULL,1/1/2025 12:00:00 AM\n"
+            f"TEST,{3000003 % 256},{3000003 // 256},3000003,270,40.300100,-75.300100,60,1/1/2025 12:00:00 AM\n",
+            encoding="utf-8")
+        (lib / "Verizon_Test.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)     # extracted copy beside it: skipped
+        logs = []
+        r = cellref.index(lib, log=logs.append)
+        ok(r["carriers"].get("Verizon", {}).get("cells") == 3 and r["carriers"].get("T-Mobile", {}).get("cells") == 2,
+           f"library index: 3 Verizon + 2 T-Mobile LTE cells (non-LTE row skipped) ({r['carriers']})")
+        ok(any("already extracted" in x for x in logs), "library index: a ZIP with its extracted folder beside it is skipped")
+        r2 = cellref.index(lib, log=lambda *a: None)
+        ok(r2["new"] == 0, "library index: unchanged lists are not re-read")
+        L = cellref.Library(lib)
+        ok(sorted(c["carrier"] for c in L.by_eci(1000001)) == ["T-Mobile", "Verizon"], "library lookup by ECI returns every carrier")
+        L.close()
+        ok(cellref.carrier_hint("D:/x/CellSites-CDR_Test_15555550100.csv")[0] == "Verizon"
+           and cellref.carrier_hint("C:/r/CDR_Mediations_15555550100.xlsx")[0] == "T-Mobile"
+           and cellref.carrier_hint("C:/r/ReportAU_1.txt")[0] == "AT&T"
+           and cellref.carrier_hint("C:/r/calls.csv")[0] == "", "carrier hints from return file names")
+
+        ret = tmp / "returns"
+        ret.mkdir()
+        hdr = "Calling Number,Called Number,Start Time (UTC),Duration (sec),ECI\n"
+        rows = "".join(f"5555550{100 + i},5555550{150 + i},2025-03-0{1 + i} 1{i}:00:00,60,{e}\n"
+                       for i, e in enumerate((1000001, 2000002, 3000003, 4000004)))
+        (ret / "CellSites-CDR_TEST_5555550100.csv").write_text(hdr + rows, encoding="utf-8")
+        (ret / "calls_export_5555550200.csv").write_text(hdr + rows.replace("5555550", "5555551"), encoding="utf-8")
+        os.environ["SPOOR_CELLSITES"] = str(lib)
+        c, con = _figure_case(tmp / "c1", "Library", ret, params={"figures": False})
+
+        def loc(name, eci):
+            return con.execute("SELECT t.lat, t.lon, t.loc_basis, c.loc_cite FROM tel t JOIN sources s ON s.id=t.source_id "
+                               "JOIN calls c ON c.id=t.event_id WHERE s.display LIKE ? AND t.eci=?", (f"%{name}%", eci)).fetchone()
+        v = loc("CellSites-CDR", 1000001)
+        ok(v and abs(v[0] - 40.1) < 1e-6 and "Verizon" in v[2] and "cellsites/Verizon_Test/Region_CALEA.V0.csv" in (v[3] or ""),
+           f"Verizon-named return: colliding ECI placed from the Verizon list, citing file and row ({v})")
+        g = loc("calls_export", 1000001)
+        ok(g and g[0] is None, "return with no carrier: ECI named by two carriers at different places is left unlocated")
+        g2, g3 = loc("calls_export", 2000002), loc("calls_export", 3000003)
+        ok(g2 and g2[0] is not None and g3 and g3[0] is not None,
+           "return with no carrier: ECI in one list, or in lists that agree, is placed")
+        q = json.loads(con.execute("SELECT facts FROM findings WHERE kind='telecom_quality'").fetchone()[0])["values"]
+        reasons = q["unlocated_reasons"]
+        ok(any("several carriers" in k for k in reasons) and q["library"]["matched"] == 5,
+           f"quality finding counts library matches and the carrier collision ({q['library']['matched']}, {reasons})")
+        rv = (c.report_dir / "REVIEW.md").read_text("utf-8")
+        ok("Reference cell-site list used" in rv and "Verizon_Test/Region_CALEA.V0.csv" in rv, "REVIEW lists the library files used")
+        mt = (c.report_dir / "METHODS.md").read_text("utf-8")
+        ok("Reference cell-site library" in mt, "METHODS describes the library")
+
+        c2, con2 = _figure_case(tmp / "c2", "Library forced", ret, params={"figures": False},
+                                case_params={"tel_carrier": "T-Mobile"})
+        r = con2.execute("SELECT t.lat FROM tel t JOIN sources s ON s.id=t.source_id WHERE s.display LIKE '%calls_export%' "
+                         "AND t.eci=1000001").fetchone()
+        ok(r and abs(r[0] - 41.5) < 1e-6, "case setting tel_carrier picks that carrier's list")
+
+        os.environ["SPOOR_CELLSITES"] = str(tmp / "none")
+        c3, con3 = _figure_case(tmp / "c3", "No library", ret, params={"figures": False})
+        ok(not con3.execute("SELECT COUNT(*) FROM tel WHERE lat IS NOT NULL").fetchone()[0],
+           "without a library nothing is placed (bring-your-own lists only)")
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def web_smoke():
     tmp = Path(tempfile.mkdtemp(prefix="spoor-web-"))
     os.environ["SPOOR_CASES"] = str(tmp / "cases")
@@ -545,6 +635,7 @@ def web_smoke():
 
 
 def main():
+    os.environ["SPOOR_CELLSITES"] = tempfile.mkdtemp(prefix="spoor-no-cellsites-")   # results must not depend on a library
     for name, fn in (("time parsing", unit_time), ("identifiers", unit_identifiers), ("verifier", unit_verify),
                      ("markdown", unit_markdown), ("telecom units", unit_telecom)):
         print(f"\n[{name}]")
@@ -556,6 +647,8 @@ def main():
     telecom_tests()
     print("\n[carrier layouts]")
     carrier_layout_tests()
+    print("\n[reference cell-site library]")
+    cellref_tests()
     print("\n[self-test]")
     from spoor.selftest import selftest
     ok(selftest(), "built-in self-test")

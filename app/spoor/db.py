@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS tel (
   event_id INTEGER PRIMARY KEY, source_id INTEGER, target TEXT, target_basis TEXT, other TEXT, other_raw TEXT,
   dir TEXT, kind TEXT, ts_epoch REAL, ts_utc TEXT, duration_s REAL, cell TEXT, cell_last TEXT, eci INTEGER, enb INTEGER,
   lat REAL, lon REAL, azimuth REAL, beamwidth REAL, site_name TEXT, loc_basis TEXT, loc_event_id INTEGER,
-  imei TEXT, imsi TEXT, dev_lat REAL, dev_lon REAL, dev_conf TEXT, src_kind TEXT, section TEXT, note TEXT
+  imei TEXT, imsi TEXT, dev_lat REAL, dev_lon REAL, dev_conf TEXT, src_kind TEXT, section TEXT, note TEXT, loc_ref TEXT
 );
 CREATE TABLE IF NOT EXISTS cell_sites (
   id INTEGER PRIMARY KEY, cell TEXT, source_id INTEGER, event_id INTEGER, origin TEXT, site_name TEXT,
@@ -204,8 +204,8 @@ CREATE VIEW IF NOT EXISTS src AS
 CREATE VIEW IF NOT EXISTS calls AS
   SELECT t.event_id AS id, s.label || ':' || e.loc AS cite, s.label AS source, t.ts_utc, t.target, t.other, t.dir,
          t.kind, t.duration_s, t.cell, t.cell_last, t.eci, t.lat, t.lon, t.azimuth, t.site_name, t.loc_basis,
-         (SELECT s2.label || ':' || e2.loc FROM events e2 JOIN sources s2 ON s2.id = e2.source_id
-           WHERE e2.id = t.loc_event_id) AS loc_cite, t.imei, t.imsi, t.dev_lat, t.dev_lon, t.dev_conf, t.src_kind,
+         COALESCE((SELECT s2.label || ':' || e2.loc FROM events e2 JOIN sources s2 ON s2.id = e2.source_id
+           WHERE e2.id = t.loc_event_id), t.loc_ref) AS loc_cite, t.imei, t.imsi, t.dev_lat, t.dev_lon, t.dev_conf, t.src_kind,
          t.section, e.raw
   FROM tel t JOIN events e ON e.id = t.event_id JOIN sources s ON s.id = t.source_id;
 CREATE VIEW IF NOT EXISTS tcore AS
@@ -251,7 +251,7 @@ def connect(path, readonly: bool = False) -> sqlite3.Connection:
     return con
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def init(con: sqlite3.Connection) -> None:

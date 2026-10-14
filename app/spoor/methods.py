@@ -178,6 +178,15 @@ def methods_text(case, con) -> str:
               "carrier); a list elsewhere is used only if every list naming that cell agrees within "
               f"{int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m. Azimuth and beamwidth missing from the record are taken from "
               "the tower list entry for the same ECI. Each located record cites the tower-list row its coordinates came from.",
+              "- **Reference cell-site library.** Records the case's own lists do not place are looked up, by ECI, in the "
+              "carrier lists kept in Spoor's cellsites/ folder (indexed with `spoor cellsites index`; these lists are not part of "
+              "Spoor and did not come with the return). The carrier is taken from the case setting tel_carrier, else from the "
+              "return's file name or folder (e.g. CDR_Mediations / TWD_ / TimingAdvance = T-Mobile, ReportAU / ReportTOWER = "
+              "AT&T, CellSites-CDR / VoLTE = Verizon, CXM_HDA = UScellular); an ECI is unique only within one carrier, so with "
+              "no carrier a cell is placed only when every library list naming it agrees within "
+              f"{int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m. Lists without ECIs (older CDMA lists) are used by cell "
+              "label and only when the carrier is known. Each record so placed cites the list file and row; REVIEW.md lists every "
+              "library file used with its SHA-256 so its date can be checked against the records.",
               "- **Handsets.** IMEIs are compared on their first 14 digits (type allocation code + serial): carriers append a Luhn "
               "check digit, a 0 or a two-digit software version. A value shown in scientific notation (e.g. 3.5E+14) was "
               "damaged by a spreadsheet before it reached Spoor and is not used (counted in the data-quality finding).",

@@ -154,7 +154,8 @@ def selftest(keep: bool = False) -> bool:
         print(("  PASS  " if ok else "  FAIL  ") + msg, flush=True)
 
     tmp = Path(tempfile.mkdtemp(prefix="spoor-selftest-"))
-    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS", "SPOOR_CELLSITES")}
+    os.environ["SPOOR_CELLSITES"] = str(tmp / "no-cellsites")    # results must not depend on an installed library
     print(f"Spoor self-test (temporary folder {tmp})\n")
     try:
         from . import mockllm
