@@ -17,6 +17,7 @@ CATEGORY_ORDER = [
     "Logins & account security",
     "Timing & activity patterns",
     "Links & cross-source",
+    "Cross-return overlap",
     "Calls, texts & cell sites",
     "Identifiers",
     "Counterparties & transactions",
@@ -24,7 +25,7 @@ CATEGORY_ORDER = [
 ]
 CATEGORY_SLUG = {
     "Sources & data quality": "quality", "IP addresses": "ip", "Logins & account security": "logins",
-    "Timing & activity patterns": "temporal", "Links & cross-source": "links",
+    "Timing & activity patterns": "temporal", "Links & cross-source": "links", "Cross-return overlap": "crossref",
     "Calls, texts & cell sites": "telecom", "Identifiers": "identifiers",
     "Counterparties & transactions": "counterparties", "Watchlist hits": "watchlist",
 }
@@ -119,9 +120,10 @@ def cite_of(con, event_id: int) -> str:
     return r[0] if r else "?"
 
 
-def labels_for(con, source_ids: Iterable[int]) -> str:
+def labels_for(con, source_ids: Iterable[int], with_returns: bool = False) -> str:
     ids = sorted(set(int(i) for i in source_ids))
     if not ids:
         return ""
-    m = {r[0]: r[1] for r in con.execute(f"SELECT id, label FROM sources WHERE id IN ({','.join('?' * len(ids))})", ids)}
+    m = {r[0]: (f"{r[1]} ({r[2]})" if with_returns and r[2] else r[1]) for r in con.execute(
+        f"SELECT s.id, s.label, r.label FROM sources s LEFT JOIN returns r ON r.id=s.return_id WHERE s.id IN ({','.join('?' * len(ids))})", ids)}
     return ", ".join(m.get(i, str(i)) for i in ids)

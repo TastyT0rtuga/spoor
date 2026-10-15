@@ -47,7 +47,7 @@ def methods_text(case, con) -> str:
           "basis of the conversion recorded per record. IP addresses are normalised and classified. Identifiers are extracted and validated.",
           "4. **Analyse.** Deterministic SQL and Python analyses produce findings. Each finding stores the values it states, the "
           "records it rests on, and a reproducing query. Finding numbers are assigned in a fixed order.",
-          "5. **Report.** Markdown files and CSV exports are written; a SHA-256 manifest covers the report folder.",
+          "5. **Report.** Markdown files and CSV exports are written; a SHA-256 manifest covers the report folder. REPORT.md is the analysis (BLUF, figures, narrative, numbered references, Appendix A negative results, Appendix B data notes); each sentence is composed from a finding's own facts and ends with its reference number. REPORT-FULL.md is the long form. When two or more returns are included CROSSREF.md lists only items present in more than one return. A return left out by the analyst takes no part in any result; this is recorded as a finding.",
           "6. **Figures.** Deterministic SVG figures are drawn from the findings (see Figures below); a figure that fails is "
           "listed in REVIEW.md and does not stop the run.",
           "7. **Citation check.** Cited records are located again in the original files and compared with the stored text; "

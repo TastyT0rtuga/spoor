@@ -124,7 +124,7 @@ class Report:
     def write_all(self, stage: str = "final") -> list[Path]:
         files = []
         steps = [self.exports, self.charts, self.sources_md, self.findings_md, self.evidence_md, self.timeline_md,
-                 self.figures_md, self.methods_md, self.review_md, self.citation_md, self.report_md]
+                 self.figures_md, self.methods_md, self.review_md, self.citation_md, self.report_full_md, self.crossref_md, self.report_md]
         if self.prog:
             self.prog.set_total(len(steps), "files")
         for i, fn in enumerate(steps):
@@ -141,7 +141,7 @@ class Report:
     def write_after_figures(self) -> list[Path]:
         """After the Figures stage: the files that show or list figures, and the manifest."""
         files = []
-        for fn in (self.figures_md, self.methods_md, self.review_md, self.citation_md, self.report_md):
+        for fn in (self.figures_md, self.methods_md, self.review_md, self.citation_md, self.report_full_md, self.crossref_md, self.report_md):
             r = fn()
             if r:
                 files.append(r)
@@ -605,7 +605,7 @@ class Report:
         return L
 
     # ------------------------------------------------------------------ REPORT.md
-    def report_md(self) -> Path:
+    def report_full_md(self) -> Path:
         c = self.con
         n_ev = dbm.one(c, "SELECT COUNT(*) FROM events") or 0
         n_id = dbm.one(c, "SELECT COUNT(*) FROM identifiers WHERE kind NOT IN ('ipv4','ipv6')") or 0
@@ -686,9 +686,17 @@ class Report:
               "- [CITATION_CHECK.md](CITATION_CHECK.md) — re-verification of every citation against the originals",
               "- `exports/` — CSV files (timeline, IP inventory, IP/timestamp list for legal process, link-chart edges, identifiers)",
               "- `MANIFEST.sha256` — SHA-256 of every file in this report folder", ""]
-        p = self.out / "REPORT.md"
+        p = self.out / "REPORT-FULL.md"
         p.write_text("\n".join(L) + "\n", encoding="utf-8")
         return p
+
+    def report_md(self) -> Path:
+        from .analysis import write_analysis
+        return write_analysis(self)
+
+    def crossref_md(self) -> Path | None:
+        from .analysis import write_crossref
+        return write_crossref(self)
 
     def manifest(self) -> Path:
         lines = []

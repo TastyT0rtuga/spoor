@@ -27,9 +27,10 @@ class Identifiers(Analysis):
             top = self.q("SELECT norm, validity, events, sources, accounts, first_utc, last_utc FROM ident_summary WHERE kind=? "
                          "ORDER BY events DESC, norm LIMIT ?", (k["kind"], min(self.trows, 15)))
             tables.append({"title": f"{label} (top {len(top)})",
-                           "columns": ["value", "validated", "records", "sources", "accounts", "first_utc", "last_utc"],
-                           "rows": [[t["norm"], t["validity"], t["events"], t["sources"], t["accounts"], t["first_utc"], t["last_utc"]]
-                                    for t in top], "total_rows": k["distinct_values"]})
+                           "columns": ["value", "validated", "records", "sources"] + (["returns"] if self.multi else []) + ["accounts", "first_utc", "last_utc"],
+                           "rows": [[t["norm"], t["validity"], t["events"], t["sources"]]
+                                    + ([self.prov.labels(self.prov.of_ident(k["kind"], t["norm"]))] if self.multi else [])
+                                    + [t["accounts"], t["first_utc"], t["last_utc"]] for t in top], "total_rows": k["distinct_values"]})
         stmt = "Identifiers found in the records - " + "; ".join(parts) + ". Cryptocurrency addresses, IMEIs and checksummed formats were kept only when their checksum verified."
         self.add("identifier_inventory", "Identifier inventory", stmt,
                  {"values": {k["kind"]: k["distinct_values"] for k in kinds}, "tables": tables},

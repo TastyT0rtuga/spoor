@@ -54,9 +54,10 @@ class IPs(Analysis):
             ev += self.sample("ip=?", (r["ip"],), 2)
         self.add("ip_inventory", "IP address inventory", stmt,
                  {"values": vals, "tables": [{"title": f"Top {len(top)} IPs by number of events",
-                                              "columns": ["ip", "class", "events", "accounts", "sources", "first_utc", "last_utc", "asn", "network", "country"],
-                                              "rows": [[r["ip"], r["ip_class"], r["events"], r["accounts"], r["sources"], r["first_utc"],
-                                                        r["last_utc"], r["asn"], r["as_org"], r["country"]] for r in top],
+                                              "columns": ["ip", "class", "events", "accounts", "sources"] + (["returns"] if self.multi else []) + ["first_utc", "last_utc", "asn", "network", "country"],
+                                              "rows": [[r["ip"], r["ip_class"], r["events"], r["accounts"], r["sources"]]
+                                                       + ([self.prov.labels(self.prov.of_ip(r["ip"]))] if self.multi else [])
+                                                       + [r["first_utc"], r["last_utc"], r["asn"], r["as_org"], r["country"]] for r in top],
                                               "total_rows": distinct}]},
                  sql="SELECT * FROM ip_summary ORDER BY events DESC", evidence=ev, priority=3, sort_key="9",
                  export="exports/ip_inventory.csv")
@@ -77,7 +78,10 @@ class IPs(Analysis):
             net = self.net_label(ip)
             src_lab = self.labels([s["source_id"] for s in srcs])
             parts = [f"IP {ip} ({net}) appears in {plural(r['events'], 'event')}"]
-            if r["sources"] >= 2:
+            pv = self.prov.of_ip(ip)
+            if self.multi:
+                parts.append(f"in {self.prov.phrase(pv)}" + (f", {plural(r['sources'], 'file')} ({src_lab})" if r["sources"] >= 2 else f" ({src_lab})"))
+            elif r["sources"] >= 2:
                 parts.append(f"across {plural(r['sources'], 'source')} ({src_lab})")
             else:
                 parts.append(f"in {src_lab}")
@@ -87,7 +91,8 @@ class IPs(Analysis):
             stmt += "."
             vals = {"ip": ip, "network": net, "events": r["events"], "sources": r["sources"], "source_labels": src_lab,
                     "accounts": r["accounts"], "first_utc": r["first_utc"], "last_utc": r["last_utc"],
-                    "asn": r["asn"], "as_org": r["as_org"], "country": r["country"], "ip_class": r["ip_class"]}
+                    "asn": r["asn"], "as_org": r["as_org"], "country": r["country"], "ip_class": r["ip_class"],
+                    "returns": self.prov.labels(pv), "return_count": len(pv)}
             ev = []
             if accts:
                 shown = accts[:5]
@@ -115,6 +120,9 @@ class IPs(Analysis):
                        "total_rows": len(accts)},
                       {"title": "Sources", "columns": ["source", "events", "first_utc", "last_utc"],
                        "rows": [[self.labels([s["source_id"]]), s["n"], s["f"], s["l"]] for s in srcs]}]
+            if self.multi:
+                tables.insert(1, {"title": "Returns", "columns": ["return", "name", "events", "first_utc", "last_utc"],
+                                  "rows": [[x[0], self.prov.name(x[0]), x[1], x[2], x[3]] for x in pv]})
             key = f"{999 - min(r['accounts'], 999):03d}{99 - min(r['sources'], 99):02d}{10**9 - min(r['events'], 10**9 - 1):010d}{ip}"
             self.add("notable_ip", f"IP {ip}: {plural(r['sources'], 'source')}, {plural(r['accounts'], 'account')}", stmt,
                      {"values": vals, "tables": tables},

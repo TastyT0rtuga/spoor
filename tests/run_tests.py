@@ -582,6 +582,56 @@ def cellref_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def report_tests():
+    """Returns lifecycle, cross-return page, negative results, BLUF-first report, references, telecom map files."""
+    from spoor import db as dbm
+    from spoor import returns as rets
+    from spoor.jobs import start_job
+    from spoor.selftest import demo_returns_dir
+    root = Path(tempfile.mkdtemp(prefix="spoor-report-"))
+    c, con = _figure_case(root, "Report-demo", demo_returns_dir())
+    ok(not [r[0] for r in con.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "no analysis module failed")
+    ok(rets.multi(con) and len(rets.active_returns(con)) >= 6, "demo folder grouped into returns (R01...)")
+    rp = c.report_dir
+    for fn in ("REPORT.md", "REPORT-FULL.md", "CROSSREF.md"):
+        ok((rp / fn).exists(), f"{fn} written")
+    txt = (rp / "REPORT.md").read_text(encoding="utf-8")
+    pos = [txt.find(h) for h in ("## BLUF", "## Figures", "## What the records show", "## References", "## Appendix A")]
+    ok(all(x >= 0 for x in pos) and pos == sorted(pos), "REPORT.md order: BLUF, figures, narrative, references, appendix A")
+    a = txt.find("## Appendix A")
+    ok("No IP address was the source of failed logins" not in txt[:a] and "No IP address was the source of failed logins" in txt[a:],
+       "negative results appear only in Appendix A")
+    cited = set(re.findall(r"\(#ref-(\d+)\)", txt))
+    anchors = set(re.findall(r'<a id="ref-(\d+)"></a>', txt))
+    ok(cited and cited <= anchors, f"every reference number cited has a bibliography entry ({len(anchors)} entries)")
+    ok(re.search(r"\*\*\[1\]\*\* .*S\d+ \(R\d+ ", txt) is not None, "bibliography names source, return and file")
+    xr = (rp / "CROSSREF.md").read_text(encoding="utf-8")
+    ok("+17035550142" in xr and "R01" in xr, "CROSSREF.md lists the shared phone number with the returns it is in")
+    ok("**Map:**" not in txt and not (rp / "exports" / "telecom.geojson").exists(), "no map line or GeoJSON when there are no telecom records")
+    # leave a return out, run again, put it back
+    n_all = con.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+    rets.set_state(con, c, "R05", "excluded", "test")
+    start_job(c, con, "run", {"llm": False}, wait=True)
+    con = c.db()
+    txt2 = (rp / "REPORT.md").read_text(encoding="utf-8")
+    ok("Left out by the analyst: R05" in txt2, "report names the return that was left out")
+    ok("R05" not in (rp / "CROSSREF.md").read_text(encoding="utf-8").split("Left out by the analyst")[0].split("## Items present")[-1],
+       "excluded return takes no part in the cross-return items")
+    rets.set_state(con, c, "R05", "active")
+    start_job(c, con, "run", {"llm": False}, wait=True)
+    con = c.db()
+    ok(con.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == n_all, "including the return again restores the same findings")
+    # telecom: map files and map line
+    tc, tcon = _figure_case(Path(tempfile.mkdtemp(prefix="spoor-tel-report-")), "Tel-report", ROOT / "demo" / "telecom")
+    t = (tc.report_dir / "REPORT.md").read_text(encoding="utf-8")
+    ok("**Map:**" in t and (tc.report_dir / "exports" / "telecom.geojson").exists() and (tc.report_dir / "exports" / "telecom.kml").exists(),
+       "telecom case: report names the KML and GeoJSON, both written")
+    from spoor.mapdata import map_data
+    d = map_data(tcon, tc.params)
+    ok(d["status"]["map"] and d["sites"] and d["targets"], "map data has cell sites and located records per target")
+    ok(not [r[0] for r in tcon.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "telecom case: no analysis module failed")
+
+
 def web_smoke():
     tmp = Path(tempfile.mkdtemp(prefix="spoor-web-"))
     os.environ["SPOOR_CASES"] = str(tmp / "cases")
@@ -647,6 +697,8 @@ def main():
     telecom_tests()
     print("\n[carrier layouts]")
     carrier_layout_tests()
+    print("\n[returns, cross-reference, report]")
+    report_tests()
     print("\n[reference cell-site library]")
     cellref_tests()
     print("\n[self-test]")

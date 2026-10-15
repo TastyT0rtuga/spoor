@@ -11,6 +11,7 @@ from typing import Callable, Optional
 
 from . import db as dbm
 from . import readers
+from .returns import ACTIVE_SQL
 from .identifiers import EMAIL_RE, extract as extract_ids, phone_from_cell
 from .ipaddr import classify, find_ips, split_ip_port, subnet_key
 from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, is_tel_mapping, is_tower_mapping,
@@ -31,7 +32,7 @@ INSERT_ID = "INSERT INTO identifiers(event_id, source_id, kind, value, norm, val
 def prepare_sources(case, con, prog=None, log=None) -> None:
     """Extract ZIPs (registering members as sources), hash every file, flag exact duplicates."""
     while True:
-        zips = dbm.rows(con, "SELECT * FROM sources WHERE kind='zip' AND status='new' ORDER BY id")
+        zips = dbm.rows(con, f"SELECT * FROM sources WHERE kind='zip' AND status='new' AND {ACTIVE_SQL} ORDER BY id")
         if not zips:
             break
         for z in zips:
@@ -52,15 +53,15 @@ def prepare_sources(case, con, prog=None, log=None) -> None:
                 st = path.stat()
                 label = f"S{(dbm.one(con, 'SELECT COUNT(*) FROM sources') or 0) + 1:02d}"
                 con.execute(
-                    "INSERT INTO sources(label, path, display, parent_id, member, kind, size, mtime, status, added_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO sources(label, path, display, parent_id, member, kind, size, mtime, status, added_at, return_id)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (label, str(path), f"{z['display']} ▸ {name}", z["id"], name, kind, st.st_size, "",
-                     "unsupported" if kind in ("unsupported", "empty", "unreadable") else "new", utc_now_str()))
+                     "unsupported" if kind in ("unsupported", "empty", "unreadable") else "new", utc_now_str(), z.get("return_id")))
             cfg.pop("zip_password", None)
             con.execute("UPDATE sources SET status='container', config=? WHERE id=?", (json.dumps(cfg), z["id"]))
             con.commit()
             case.audit(con, "zip_extracted", {"source": z["label"], "members": len(members), "to": str(dest)})
-    todo = dbm.rows(con, "SELECT id, label, path, size FROM sources WHERE sha256 IS NULL ORDER BY id")
+    todo = dbm.rows(con, f"SELECT id, label, path, size FROM sources WHERE sha256 IS NULL AND {ACTIVE_SQL} ORDER BY id")
     total = sum(r["size"] or 0 for r in todo) or 1
     done = 0
     if prog:
@@ -82,8 +83,8 @@ def prepare_sources(case, con, prog=None, log=None) -> None:
             con.commit()
             continue
         con.execute("UPDATE sources SET sha256=?, hashed_at=? WHERE id=?", (h, utc_now_str(), r["id"]))
-        dup = dbm.one(con, "SELECT label FROM sources WHERE sha256=? AND id<? AND kind!='zip' AND status!='duplicate' ORDER BY id LIMIT 1",
-                      (h, r["id"]))
+        dup = dbm.one(con, f"SELECT label FROM sources WHERE sha256=? AND id<? AND kind!='zip' AND status NOT IN ('duplicate','excluded') "
+                           f"AND {ACTIVE_SQL} ORDER BY id LIMIT 1", (h, r["id"]))
         if dup:
             con.execute("UPDATE sources SET status='duplicate', error=? WHERE id=?",
                         (f"identical to {dup} (same SHA-256); not ingested twice", r["id"]))
@@ -181,7 +182,7 @@ def build_config(scan: dict, src: dict, params: dict) -> dict:
 
 
 def scan_sources(case, con, prog=None, log=None, rescan_ids: Optional[list] = None) -> None:
-    q = "SELECT * FROM sources WHERE status IN ('new') AND kind NOT IN ('zip')"
+    q = f"SELECT * FROM sources WHERE status IN ('new') AND kind NOT IN ('zip') AND {ACTIVE_SQL}"
     todo = dbm.rows(con, q + " ORDER BY id")
     if rescan_ids:
         todo += dbm.rows(con, f"SELECT * FROM sources WHERE id IN ({','.join('?' * len(rescan_ids))})", rescan_ids)

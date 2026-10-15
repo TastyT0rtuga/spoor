@@ -21,6 +21,11 @@ def _case(name):
         raise SystemExit(f"No case '{name}'. Cases: {', '.join(c['slug'] for c in list_cases()) or 'none'}")
 
 
+def dbm_changed(con) -> bool:
+    from . import db as dbm
+    return bool(dbm.get_meta(con, "returns_changed"))
+
+
 def dbm_findings(con) -> int:
     return con.execute("SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL").fetchone()[0]
 
@@ -51,6 +56,17 @@ def main(argv=None):
     s.add_argument("path")
     s.add_argument("--no-recursive", action="store_true")
     s.add_argument("--zip-password", default="")
+    s = sub.add_parser("returns", help="list the returns in a case, or leave one out / put it back / rename it / move a file")
+    s.add_argument("case")
+    s.add_argument("action", nargs="?", default="list",
+                   choices=["list", "exclude", "include", "remove", "restore", "rename", "move"],
+                   help="exclude R03: leave it out of the next run (reversible); include R03: put it back; remove: hide it too; "
+                        "rename R03 \"New name\"; move S05 R02 (or: move S05 new)")
+    s.add_argument("value", nargs="?", help="a return (R03) or, for move, a file label (S05)")
+    s.add_argument("extra", nargs="?", help="rename: the new name; move: the target return (or: new)")
+    s.add_argument("--reason", default="", help="why (kept in the audit log and the report)")
+    s.add_argument("--run", action="store_true", help="re-run the analysis straight away (in this window)")
+    s.add_argument("--no-llm", action="store_true")
     s = sub.add_parser("run", help="run (or resume) the full analysis in the background")
     s.add_argument("case")
     s.add_argument("--no-llm", action="store_true", help="skip the AI-drafted summary")
@@ -117,6 +133,39 @@ def main(argv=None):
             print(f"{x['label']}  {x['kind']:8} {x['path']}")
         for p, why in r["skipped"]:
             print(f"skipped {p}: {why}")
+    elif cmd == "returns":
+        from . import returns as rets
+        c = _case(a.case)
+        con = c.db()
+        try:
+            if a.action in ("exclude", "include", "remove", "restore"):
+                if not a.value:
+                    raise SystemExit("Say which return, e.g.: spoor returns CASE exclude R03")
+                st = {"exclude": "excluded", "include": "active", "restore": "active", "remove": "removed"}[a.action]
+                r = rets.set_state(con, c, a.value, st, a.reason)
+                print(f"{r['label']} {r['name']}: {r['state']}")
+            elif a.action == "rename":
+                if not (a.value and a.extra):
+                    raise SystemExit('Usage: spoor returns CASE rename R03 "New name"')
+                rets.rename(con, c, a.value, a.extra)
+                print("renamed")
+            elif a.action == "move":
+                if not (a.value and a.extra):
+                    raise SystemExit("Usage: spoor returns CASE move S05 R02   (or: move S05 new)")
+                r = rets.move_source(con, c, a.value, None if a.extra.lower() == "new" else a.extra)
+                print(f"{a.value} is now in {r['label']} {r['name']}")
+        except ValueError as e:
+            raise SystemExit(str(e))
+        if a.action == "list" or a.action in ("exclude", "include", "remove", "restore", "rename", "move"):
+            for r in rets.return_rows(con):
+                span = f"{(r['first_utc'] or '')[:10]} to {(r['last_utc'] or '')[:10]}" if r["first_utc"] else ""
+                print(f"{r['label']}  {r['state']:9} {r['name']:32} {len(r['files']):3} file(s) {r['records']:>9,} records  {span}  [{', '.join(r['labels'][:8])}{' ...' if len(r['labels']) > 8 else ''}]")
+            if dbm_changed(con):
+                print("\nThe return set has changed since the last analysis - run it again: spoor run \"" + c.slug + "\"")
+        if a.run:
+            from .jobs import start_job, status_text
+            start_job(c, con, "run", {"llm": not a.no_llm}, wait=True)
+            print(status_text(c, c.db(), markdown=False))
     elif cmd == "run":
         from .jobs import start_job
         c = _case(a.case)

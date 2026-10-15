@@ -34,7 +34,19 @@ CREATE TABLE IF NOT EXISTS sources (
   checkpoint TEXT,
   error TEXT,
   added_at TEXT,
-  ingested_at TEXT
+  ingested_at TEXT,
+  return_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS returns (
+  id INTEGER PRIMARY KEY,
+  label TEXT UNIQUE,
+  name TEXT,
+  root TEXT,
+  state TEXT DEFAULT 'active',
+  note TEXT,
+  added_at TEXT,
+  state_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -187,27 +199,30 @@ CREATE TABLE IF NOT EXISTS cell_sites (
 CREATE TABLE IF NOT EXISTS figure_refs (figure_no INTEGER, ord INTEGER, marker TEXT, fid TEXT, shows TEXT, cite TEXT);
 
 CREATE VIEW IF NOT EXISTS ev AS
-  SELECT e.id, s.label || ':' || e.loc AS cite, s.label AS source, e.ts_utc, e.ts_raw, e.tz_basis, e.ts_flag,
+  SELECT e.id, s.label || ':' || e.loc AS cite, s.label AS source, r.label AS ret, e.ts_utc, e.ts_raw, e.tz_basis, e.ts_flag,
          e.ip, e.ip_class, e.port, e.account, e.category, e.action, e.status, e.user_agent, e.device,
          e.location, e.counterparty, e.direction, e.amount, e.currency, e.raw
-  FROM events e JOIN sources s ON s.id = e.source_id;
+  FROM events e JOIN sources s ON s.id = e.source_id LEFT JOIN returns r ON r.id = s.return_id;
 CREATE VIEW IF NOT EXISTS ids AS
-  SELECT i.kind, i.norm AS value, i.validity, s.label || ':' || e.loc AS cite, s.label AS source,
+  SELECT i.kind, i.norm AS value, i.validity, s.label || ':' || e.loc AS cite, s.label AS source, r.label AS ret,
          e.ts_utc, e.account
   FROM identifiers i JOIN events e ON e.id = i.event_id JOIN sources s ON s.id = i.source_id
+       LEFT JOIN returns r ON r.id = s.return_id
   UNION ALL
-  SELECT CASE e.ip_ver WHEN 6 THEN 'ipv6' ELSE 'ipv4' END, e.ip, 'format', s.label || ':' || e.loc, s.label,
+  SELECT CASE e.ip_ver WHEN 6 THEN 'ipv6' ELSE 'ipv4' END, e.ip, 'format', s.label || ':' || e.loc, s.label, r.label,
          e.ts_utc, e.account
-  FROM events e JOIN sources s ON s.id = e.source_id WHERE e.ip IS NOT NULL;
+  FROM events e JOIN sources s ON s.id = e.source_id LEFT JOIN returns r ON r.id = s.return_id WHERE e.ip IS NOT NULL;
 CREATE VIEW IF NOT EXISTS src AS
-  SELECT label AS source, display AS file, kind, sha256, rows FROM sources WHERE status = 'ingested';
+  SELECT s.label AS source, r.label AS ret, s.display AS file, s.kind, s.sha256, s.rows
+  FROM sources s LEFT JOIN returns r ON r.id = s.return_id WHERE s.status = 'ingested';
 CREATE VIEW IF NOT EXISTS calls AS
-  SELECT t.event_id AS id, s.label || ':' || e.loc AS cite, s.label AS source, t.ts_utc, t.target, t.other, t.dir,
+  SELECT t.event_id AS id, s.label || ':' || e.loc AS cite, s.label AS source, rr.label AS ret, t.ts_utc, t.target, t.other, t.dir,
          t.kind, t.duration_s, t.cell, t.cell_last, t.eci, t.lat, t.lon, t.azimuth, t.site_name, t.loc_basis,
          COALESCE((SELECT s2.label || ':' || e2.loc FROM events e2 JOIN sources s2 ON s2.id = e2.source_id
            WHERE e2.id = t.loc_event_id), t.loc_ref) AS loc_cite, t.imei, t.imsi, t.dev_lat, t.dev_lon, t.dev_conf, t.src_kind,
          t.section, e.raw
-  FROM tel t JOIN events e ON e.id = t.event_id JOIN sources s ON s.id = t.source_id;
+  FROM tel t JOIN events e ON e.id = t.event_id JOIN sources s ON s.id = t.source_id
+       LEFT JOIN returns rr ON rr.id = s.return_id;
 CREATE VIEW IF NOT EXISTS tcore AS
   SELECT * FROM tel WHERE COALESCE(src_kind, 'cdr') != 'dump' AND COALESCE(dir, '') != 'fwd';
 CREATE VIEW IF NOT EXISTS ccore AS
@@ -251,19 +266,23 @@ def connect(path, readonly: bool = False) -> sqlite3.Connection:
     return con
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def init(con: sqlite3.Connection) -> None:
     con.executescript(SCHEMA)
     r = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if not r or r[0] != str(SCHEMA_VERSION):
+        if "return_id" not in [c[1] for c in con.execute("PRAGMA table_info(sources)")]:
+            con.execute("ALTER TABLE sources ADD COLUMN return_id INTEGER")      # schema 6: sources belong to returns
         for v in ("ev", "ids", "src", "fnd", "calls", "tcore", "ccore"):
             con.execute(f"DROP VIEW IF EXISTS {v}")
         for t in ("tel", "cell_sites"):          # derived on every run; rebuilt with the new columns
             con.execute(f"DROP TABLE IF EXISTS {t}")
         con.executescript(SCHEMA)
         con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+    from .returns import backfill
+    backfill(con)
     for ix in SOURCE_INDEXES:
         con.execute(ix)
     con.commit()

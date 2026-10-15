@@ -99,7 +99,9 @@ Everything is in `cases\<case>\report\`:
 
 | File | Contents |
 |---|---|
-| `REPORT.md` | Start here. Case summary, the verified AI summary (if any), priority-1 findings, every category with its charts and figures. |
+| `REPORT.md` | Start here. BLUF, figures, a short narrative, the returns analysed, numbered references, then negative results and data notes in appendices. |
+| `REPORT-FULL.md` | The long form: every finding with its statement and evidence line. |
+| `CROSSREF.md` | Only when two or more returns are included: what they have in common, and nothing else. |
 | `FIGURES.md` | Each figure with its caption, what it leaves out, and a **sources table**: marker → finding → cited records → the read-only SQL behind it, plus the query that returns exactly what is drawn. |
 | `figures\FIG01-timeline.svg`, `figures\FIG02-links.svg` | The figures (section 6). Self-contained SVG: fonts embedded, no scripts, no links; open in any browser or Markdown viewer, or print. |
 | `FINDINGS.md` | Every finding (F001…): statement, tables, evidence citations and the read-only SQL that reproduces it. |

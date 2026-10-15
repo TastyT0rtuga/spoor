@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .activity import Activity
 from .counterparties import Counterparties
+from .crossref import CrossRef
 from .idents import Identifiers
 from .ips import IPs
 from .links import Links
@@ -12,4 +13,4 @@ from .telecom import Telecom
 from .temporal import Temporal
 from .watchlist import Watchlist
 
-MODULES = [Quality, IPs, Logins, Temporal, Links, Telecom, Identifiers, Counterparties, Watchlist, Activity]
+MODULES = [Quality, IPs, Logins, Temporal, Links, CrossRef, Telecom, Identifiers, Counterparties, Watchlist, Activity]

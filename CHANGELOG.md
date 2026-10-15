@@ -2,6 +2,28 @@
 
 ## 1.1.0 — in development
 
+- **Analysis report (REPORT.md rewritten).** Bottom line first: a BLUF of what the records show, then the
+  figures, then a short narrative by theme (account access, linked accounts, items in several returns,
+  shared identifiers, calls and cell sites, watchlist, timing), the returns analysed, and numbered
+  **References** like a bibliography (each reference gives the finding, the return, the file and the exact
+  lines; the text carries only a small superscript number). Checks that found nothing are in **Appendix A**,
+  with the SQL that reproduces each; data caveats (assumed timezones, unreadable pages, returns left out)
+  are in Appendix B. The previous long layout is still written as `REPORT-FULL.md`. Everything is built from
+  the findings' own facts; no model is involved unless the verified AI summary is switched on.
+- **Returns.** Every provider response is a *return* (R01...). Each finding, table and reference says
+  which return an IP, account or identifier comes from. New **Returns** screen / `spoor returns CASE
+  list|exclude|include|remove|restore|rename|move`: leave a return out (reversible, audited, takes effect
+  on the next run), put it back, rename it, or move a file between returns. A banner offers *Run again*.
+- **Cross-return analysis.** `CROSSREF.md` and a **Cross-reference** screen: only what two or more returns
+  have in common (IPs, accounts, identifiers, counterparties; IMEIs and numbers for telecom), the pairs of
+  returns that overlap, and the records behind each return. Pairs that share nothing are one line in
+  Appendix A. `exports/crossref.csv` has every item.
+- **Telecom map surfaced.** `exports/telecom.kml` plus a new `exports/telecom.geojson`; the dashboard
+  lists KML/GeoJSON with the CSV exports and has a **Map** screen (offline SVG: cell sites, sector wedges,
+  one colour per target, scale bar; no basemap; records sit at the serving tower, not the phone). When no
+  map can be made the report and the screen say why (no coordinates / no tower list matched).
+- Fixed: the co-location finding printed its closest-pair text as a template (`{a['target']}`).
+
 - **Reference cell-site library (bring your own lists).** Put carrier tower lists (CSV/TXT/XLSX/XLS/ZIP)
   in `cellsites/` and run `spoor cellsites index`; records the case's own lists don't place are matched
   by ECI to the list of the return's carrier (case setting `tel_carrier`, else the return's file name:

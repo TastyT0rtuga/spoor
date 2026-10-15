@@ -78,13 +78,14 @@ class Watchlist(Analysis):
             r = self.q(f"SELECT MIN(ts_utc) AS f, MAX(ts_utc) AS l, COUNT(DISTINCT account) AS a, GROUP_CONCAT(DISTINCT source_id) AS s "
                        f"FROM events WHERE {where}", args)[0]
             srcs = self.labels((r["s"] or "").split(",")) if r["s"] else ""
+            pvx = self.prov.of_where(where, args)
             cite = f"{it['file']}:L{it['line']}"
             stmt = (f"Watchlist {cite} ({it['value']}" + (f", '{it['label']}'" if it["label"] else "") + f") matches {plural(n, 'record')}"
                     + (f" for {plural(r['a'], 'account')}" if r["a"] else "") + (f" in {srcs}" if srcs else "")
                     + (f" between {T(r['f'])} and {T(r['l'])}" if r["f"] else "") + ".")
             self.add("watchlist_hit", f"Watchlist hit: {it['value']}", stmt,
                      {"values": {"watchlist": it["file"], "line": it["line"], "value": it["value"], "label": it["label"],
-                                 "note": it["note"], "records": n, "accounts": r["a"], "sources": srcs,
+                                 "note": it["note"], "records": n, "accounts": r["a"], "sources": srcs, "returns": self.prov.labels(pvx),
                                  "first_utc": r["f"], "last_utc": r["l"], "watchlist_sha256": it["sha256"]}},
                      evidence=self.sample(where, args, 8), priority=1, sort_key=f"{it['file']}{it['line']:08d}",
                      cites=[{"cite": cite, "source_id": None, "loc": f"L{it['line']}", "text": it["value"],

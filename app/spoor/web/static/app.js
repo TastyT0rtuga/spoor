@@ -122,7 +122,7 @@ async function renderHome() {
 }
 
 /* ------------------------------------------------------------------ case shell */
-const VIEWS = [["overview", "Overview"], ["sources", "Sources"], ["findings", "Findings"], ["lookup", "Look up"], ["ask", "Ask"], ["reports", "Reports"], ["settings", "Settings"]];
+const VIEWS = [["overview", "Overview"], ["returns", "Returns"], ["sources", "Files"], ["findings", "Findings"], ["crossref", "Cross-reference"], ["map", "Map"], ["lookup", "Look up"], ["ask", "Ask"], ["reports", "Reports"], ["settings", "Settings"]];
 
 async function renderCase() {
   const app = $("#app");
@@ -144,7 +144,7 @@ async function renderCase() {
   renderTrail();
   const v = $("#view");
   v.innerHTML = `<p class="muted">Loading…</p>`;
-  const fn = { overview: viewOverview, sources: viewSources, findings: viewFindings, lookup: viewLookup, ask: viewAsk, reports: viewReports, settings: viewSettings }[S.view] || viewOverview;
+  const fn = { overview: viewOverview, returns: viewReturns, crossref: viewCrossref, map: viewMap, sources: viewSources, findings: viewFindings, lookup: viewLookup, ask: viewAsk, reports: viewReports, settings: viewSettings }[S.view] || viewOverview;
   try { await fn(v); } catch (e) { v.innerHTML = `<div class="alertbox">${esc(e.message)}</div>`; }
   schedulePoll();
 }
@@ -163,7 +163,7 @@ function renderHead() {
     <h1 style="margin:0">${esc(S.c.info.name)}</h1><span class="grow"></span>
     ${running(j) ? `<button class="btn stop" data-act="cancel">Stop</button>` :
       `<label class="check" title="${llmOk ? "" : "No local model found - the analysis runs without the AI summary"}"><input type="checkbox" id="use-llm" ${llmOk ? "checked" : "disabled"}> AI-drafted summary</label>
-       <button class="btn go" data-act="run" ${S.c.counts.sources ? "" : "disabled"}>${j && (j.status === "interrupted" || j.status === "cancelled" || j.status === "error") ? "Resume analysis" : (S.c.counts.findings ? (pend ? "Run again (files changed)" : "Run again") : "Run analysis")}</button>`}
+       <button class="btn go" data-act="run" ${S.c.counts.sources ? "" : "disabled"}>${j && (j.status === "interrupted" || j.status === "cancelled" || j.status === "error") ? "Resume analysis" : (S.c.counts.findings ? (pend || S.c.returns_changed ? "Run again (returns changed)" : "Run again") : "Run analysis")}</button>`}
   </div>`;
 }
 
@@ -244,6 +244,7 @@ async function viewOverview(v) {
       <div><b>${fmt(k.p1)}</b><span>priority 1</span></div>
       <div><b>${c.span && c.span[0] ? esc(c.span[0].slice(0, 10)) + " to " + esc(c.span[1].slice(0, 10)) : "-"}</b><span>time span (UTC)</span></div>
     </div>
+    ${S.c.returns_changed && !running(currentJob()) ? `<div class="flagbox">The set of returns has changed since the last analysis (<a href="#/c/${enc(S.slug)}/returns">see Returns</a>). The report below still reflects the old set - run the analysis again.</div>` : ""}
     ${k.pending && !running(currentJob()) ? `<div class="flagbox">${fmt(k.pending)} file(s) are new or have changed settings. Run the analysis to include them.</div>` : ""}
     ${cc ? `<div class="${cc.fail ? "alertbox" : "okbox"}">Citation check ${esc(cc.run_at)}: ${fmt(cc.pass)} of ${fmt(cc.total)} cited records were re-read from the original files and matched${cc.fail ? `; <b>${fmt(cc.fail)} did not match</b> - see REVIEW.md` : ""}${cc.unverifiable ? `; ${fmt(cc.unverifiable)} could not be checked` : ""}.${cc.hashes ? ` Source hashes: ${fmt(cc.hashes.match)} unchanged${cc.hashes.mismatch ? `, <b>${fmt(cc.hashes.mismatch)} CHANGED</b>` : ""}${cc.hashes.missing ? `, ${fmt(cc.hashes.missing)} missing` : ""}.` : ""}</div>` : ""}
     ${nar ? `<div class="okbox">AI-drafted summary (${esc(nar.model)}): ${fmt(nar.accepted)} sentences kept after verification${nar.flagged ? `, ${fmt(nar.flagged)} of them flagged for your judgment` : ""}; ${fmt(nar.rejected)} removed. They are in REPORT.md; the removed ones are listed in REVIEW.md.</div>` : ""}
@@ -254,6 +255,65 @@ async function viewOverview(v) {
     <pre class="raw" id="statustext">${esc(c.status_text)}</pre>`;
 }
 
+
+/* ------------------------------------------------------------------ returns */
+async function viewReturns(v) {
+  const r = await api(`/api/case/${enc(S.slug)}/returns`);
+  const act = r.returns.filter((x) => x.state === "active"), out = r.returns.filter((x) => x.state === "excluded"), gone = r.returns.filter((x) => x.state === "removed");
+  const row = (x) => {
+    const files = x.files.map((f) => `<tr><td class="mono nw small">${esc(f.label)}</td><td class="small">${esc(f.name)}</td><td class="small muted">${esc(f.kind)}</td><td class="small"><span class="status ${esc(f.status)}">${esc(f.status)}</span></td><td class="num small">${fmt(f.rows)}</td>
+      <td class="small"><select data-move="${esc(f.label)}" aria-label="Move ${esc(f.label)} to another return"><option value="">move to…</option>${r.returns.filter((o) => o.label !== x.label && o.state !== "removed").map((o) => `<option value="${esc(o.label)}">${esc(o.label)} ${esc(o.name)}</option>`).join("")}<option value="__new">a new return</option></select></td></tr>`).join("");
+    return `<div class="panel ret ${x.state}" data-ret="${esc(x.label)}">
+      <div class="row" style="align-items:baseline">
+        <h3 style="margin:0"><span class="mono">${esc(x.label)}</span> &nbsp;<span class="retname">${esc(x.name)}</span></h3><span class="grow"></span>
+        ${x.state === "active" ? `<button class="btn small" data-ract="exclude" data-ref="${esc(x.label)}" ${r.running ? "disabled" : ""} title="Leave this return out of the next analysis. Nothing is deleted; you can put it back.">Leave out</button>`
+          : x.state === "excluded" ? `<button class="btn small go" data-ract="include" data-ref="${esc(x.label)}" ${r.running ? "disabled" : ""}>Put back</button>`
+          : `<button class="btn small go" data-ract="restore" data-ref="${esc(x.label)}">Restore</button>`}
+        <button class="btn small" data-ract="rename" data-ref="${esc(x.label)}" data-name="${esc(x.name)}">Rename</button>
+        ${x.state !== "removed" ? `<button class="btn small" data-ract="remove" data-ref="${esc(x.label)}" ${r.running ? "disabled" : ""} title="Hide this return. The files are never touched; Restore brings it back.">Remove</button>` : ""}
+      </div>
+      <div class="small muted" style="margin:4px 0 6px">${x.state === "excluded" ? `<b style="color:var(--flag)">Left out of the next analysis</b> (${esc(x.state_at || "")}${x.note ? ": " + esc(x.note) : ""}). ` : ""}${x.state === "removed" ? `<b>Removed</b> ${esc(x.state_at || "")}. ` : ""}${x.files.length} file(s)${x.state === "active" ? `, ${fmt(x.records)} records` : ""}${x.first_utc ? `, ${esc(x.first_utc.slice(0, 10))} to ${esc(x.last_utc.slice(0, 10))}` : ""} · <span class="mono">${esc(x.root || "")}</span></div>
+      <details><summary class="small">Files in this return</summary><div class="tblwrap" style="margin-top:6px"><table class="t"><tbody>${files}</tbody></table></div></details>
+    </div>`;
+  };
+  v.innerHTML = `
+    <h2>Returns</h2>
+    <p class="muted">A return is one provider's response. Every record, identifier and citation in the report says which return it came from. To drop a return that turned out to be useless, press <b>Leave out</b> and run the analysis again: the report, figures and cross-reference are rebuilt without it. <b>Put back</b> reads it again. Files are never changed or deleted.</p>
+    ${r.changed && !r.running ? `<div class="flagbox">The return set has changed. <button class="btn small go" data-act="run">Run the analysis again</button> The current report still reflects the old set.</div>` : ""}
+    ${r.running ? `<div class="flagbox">An analysis is running; changes to the returns can be made when it finishes.</div>` : ""}
+    ${act.length ? act.map(row).join("") : `<div class="empty">No active returns. Add files on the Files screen, or put a return back.</div>`}
+    ${out.length ? `<h3 style="margin-top:20px">Left out of the analysis (${out.length})</h3>${out.map(row).join("")}` : ""}
+    ${gone.length ? `<details style="margin-top:16px"><summary class="small">Removed (${gone.length})</summary>${gone.map(row).join("")}</details>` : ""}`;
+}
+
+async function returnAction(el) {
+  const act = el.dataset.ract, ref = el.dataset.ref;
+  let body = { action: act, ref };
+  if (act === "exclude") {
+    const why = prompt(`Leave ${ref} out of the next analysis?\n\nOptional note (kept in the audit log and shown in the report):`, "");
+    if (why === null) return;
+    body.reason = why;
+  } else if (act === "remove") {
+    if (!confirm(`Remove ${ref} from this case's list? The files are not touched, and Restore brings it back.`)) return;
+  } else if (act === "rename") {
+    const n = prompt(`New name for ${ref}:`, el.dataset.name || "");
+    if (!n) return;
+    body.name = n;
+  }
+  await api(`/api/case/${enc(S.slug)}/returns`, { body });
+  toast(act === "rename" ? "Renamed." : "Saved. Run the analysis again for it to take effect.");
+  renderCase();
+}
+
+async function moveSource(sel) {
+  if (!sel.value) return;
+  const body = { action: "move", source: sel.dataset.move, to: sel.value === "__new" ? "" : sel.value };
+  if (sel.value === "__new") { const n = prompt("Name for the new return:", ""); if (n === null) return; body.name = n; }
+  await api(`/api/case/${enc(S.slug)}/returns`, { body });
+  toast(`${sel.dataset.move} moved. Run the analysis again for it to take effect.`);
+  renderCase();
+}
+
 /* ------------------------------------------------------------------ sources */
 async function viewSources(v) {
   if (S.param) return viewSource(v, S.param);
@@ -261,7 +321,7 @@ async function viewSources(v) {
   const rows = r.sources.filter((s) => s.status !== "container").map((s) => {
     const flags = Object.entries(s.flags || {}).map(([k, n]) => `${esc(k)} ${fmt(n)}`).join(", ");
     return `<tr class="click" data-go="#/c/${enc(S.slug)}/sources/${s.label}">
-      <td class="mono nw">${s.label}</td><td><b>${esc(s.name)}</b>${s.parent ? `<div class="small muted">${esc(s.display)}</div>` : ""}</td>
+      <td class="mono nw">${s.label}${s.ret ? `<div class="small muted">${esc(s.ret)}</div>` : ""}</td><td><b>${esc(s.name)}</b>${s.parent ? `<div class="small muted">${esc(s.display)}</div>` : ""}</td>
       <td>${esc(s.kind)}</td><td class="num">${bytes(s.size)}</td>
       <td><span class="status ${esc(s.status)}">${esc(s.status)}</span>${s.changed ? ` <span class="status flagged">settings changed</span>` : ""}${s.error ? `<div class="small" style="color:var(--p1)">${esc(s.error)}</div>` : ""}</td>
       <td class="num">${fmt(s.rows)}</td>
@@ -271,6 +331,7 @@ async function viewSources(v) {
   v.innerHTML = `
     <div class="panel">
       <h2>Add returns</h2>
+      <p class="small muted" style="margin-top:0">Add a folder that holds one sub-folder (or ZIP) per provider and each becomes its own return (R01, R02, …). A folder of loose files, or a single file, is one return. You can rename, regroup or leave out any return on the <a href="#/c/${enc(S.slug)}/returns">Returns</a> screen.</p>
       <div class="row">
         <div class="field" style="flex:1;min-width:280px"><label for="src-path">File or folder on this computer</label>
           <input id="src-path" type="text" style="width:100%" placeholder="e.g. D:\\Returns\\Google_2024-0412"></div>
@@ -283,7 +344,7 @@ async function viewSources(v) {
       </div>
       <p class="small muted">Files are read in place and never changed. Each is hashed (SHA-256) before it is read; ZIPs are extracted into the case folder. Open a file below to check how it will be read.</p>
     </div>
-    ${rows ? `<div class="tblwrap"><table class="t"><thead><tr><th>Label</th><th>File</th><th>Kind</th><th class="num">Size</th><th>Status</th><th class="num">Records</th><th>Timezone</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ${rows ? `<div class="tblwrap"><table class="t"><thead><tr><th>File / return</th><th>Name</th><th>Kind</th><th class="num">Size</th><th>Status</th><th class="num">Records</th><th>Timezone</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<div class="empty">No files yet.</div>`}`;
 }
 
@@ -531,21 +592,9 @@ async function showAsk(id) {
 }
 
 /* ------------------------------------------------------------------ reports */
-const REPORT_NAMES = { "REPORT.md": "Report", "FIGURES.md": "Figures", "REVIEW.md": "Review checklist", "FINDINGS.md": "Findings", "EVIDENCE.md": "Evidence",
+const REPORT_NAMES = { "REPORT.md": "Analysis", "CROSSREF.md": "Cross-return", "REPORT-FULL.md": "Full detail", "FIGURES.md": "Figures", "REVIEW.md": "Review checklist", "FINDINGS.md": "Findings", "EVIDENCE.md": "Evidence",
   "SOURCES.md": "Sources", "TIMELINE.md": "Timeline", "METHODS.md": "Methods", "CITATION_CHECK.md": "Citation check" };
-async function viewReports(v) {
-  const r = await api(`/api/case/${enc(S.slug)}/reports`);
-  if (!r.files.length) { v.innerHTML = `<div class="empty">No report yet. It is written as soon as the analysis stage finishes.</div>`; return; }
-  const file = S.param || "REPORT.md";
-  v.innerHTML = `<div class="row" style="margin-bottom:10px"><button class="btn small" data-act="open-folder">Open the report folder</button>
-      <button class="btn small" data-act="rewrite">Rewrite report</button><span class="small muted">Markdown files - open them in any editor or viewer.</span></div>
-    <div class="tabs">${r.files.map((f) => `<a href="#/c/${enc(S.slug)}/reports/${esc(f.file)}" class="${f.file === file.split("#")[0] ? "on" : ""}">${esc(REPORT_NAMES[f.file] || f.file.replace(/\.md$/, ""))}</a>`).join("")}</div>
-    <div id="rep" class="report"><p class="muted">Loading…</p></div>
-    ${r.exports.length ? `<div class="panel" style="margin-top:16px"><h3>Exports (CSV)</h3>${r.exports.map((e) => `<a href="/case/${enc(S.slug)}/file/${esc(e)}">${esc(e.replace("exports/", ""))}</a>`).join(" &nbsp; ")}</div>` : ""}`;
-  const [fname, anchor] = file.split("#");
-  const rep = await api(`/api/case/${enc(S.slug)}/report?file=${enc(fname)}`);
-  const box = $("#rep");
-  box.innerHTML = rep.html;
+function fixReportLinks(box, fname) {
   const base = fname.includes("/") ? fname.slice(0, fname.lastIndexOf("/") + 1) : "";
   $$("img", box).forEach((im) => {
     const src = im.getAttribute("src");
@@ -560,6 +609,21 @@ async function viewReports(v) {
     if (m) { a.setAttribute("href", `#/c/${enc(S.slug)}/reports/${base}${m[1]}${m[2] ? "#" + m[2].slice(1) : ""}`); return; }
     if (h && !h.startsWith("#")) a.setAttribute("href", `/case/${enc(S.slug)}/file/${base}${h}`);
   });
+}
+async function viewReports(v) {
+  const r = await api(`/api/case/${enc(S.slug)}/reports`);
+  if (!r.files.length) { v.innerHTML = `<div class="empty">No report yet. It is written as soon as the analysis stage finishes.</div>`; return; }
+  const file = S.param || "REPORT.md";
+  v.innerHTML = `<div class="row" style="margin-bottom:10px"><button class="btn small" data-act="open-folder">Open the report folder</button>
+      <button class="btn small" data-act="rewrite">Rewrite report</button><span class="small muted">Markdown files - open them in any editor or viewer.</span></div>
+    <div class="tabs">${r.files.map((f) => `<a href="#/c/${enc(S.slug)}/reports/${esc(f.file)}" class="${f.file === file.split("#")[0] ? "on" : ""}">${esc(REPORT_NAMES[f.file] || f.file.replace(/\.md$/, ""))}</a>`).join("")}</div>
+    <div id="rep" class="report"><p class="muted">Loading…</p></div>
+    ${r.exports.length ? `<div class="panel" style="margin-top:16px"><h3>Exports (CSV, KML, GeoJSON)</h3>${r.exports.map((e) => `<a href="/case/${enc(S.slug)}/file/${esc(e)}">${esc(e.replace("exports/", ""))}</a>`).join(" &nbsp; ")}</div>` : ""}`;
+  const [fname, anchor] = file.split("#");
+  const rep = await api(`/api/case/${enc(S.slug)}/report?file=${enc(fname)}`);
+  const box = $("#rep");
+  box.innerHTML = rep.html;
+  fixReportLinks(box, fname);
   if (anchor) { const t = document.getElementById(anchor); if (t) t.scrollIntoView(); }
 }
 
@@ -661,6 +725,8 @@ document.addEventListener("click", async (e) => {
   if (pick) { const i = $("#src-path"); if (i) i.value = pick.dataset.pick; closeLayer(); return; }
   const anc = e.target.closest("a[data-anchor]");
   if (anc) { e.preventDefault(); const t = document.getElementById(anc.dataset.anchor); if (t) t.scrollIntoView({ behavior: "smooth" }); return; }
+  const ra = e.target.closest("[data-ract]");
+  if (ra) { try { await returnAction(ra); } catch (err) { toast(err.message, true); } return; }
   const a = e.target.closest("[data-act]");
   if (!a) return;
   const act = a.dataset.act;
@@ -724,10 +790,77 @@ document.addEventListener("click", async (e) => {
     if (act === "add-src") a.disabled = false;
   }
 });
+document.addEventListener("change", async (e) => {
+  const m = e.target.closest("select[data-move]");
+  if (m) { try { await moveSource(m); } catch (err) { toast(err.message, true); } }
+});
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeLayer();
   if (e.key === "Enter" && e.target && e.target.id === "lk-q") doLookup(false);
   if (e.key === "Enter" && e.target && e.target.id === "ff-q") { S.fl = { q: e.target.value.trim(), category: $("#ff-cat").value, priority: $("#ff-pr").value }; renderCase(); }
 });
+
+async function viewCrossref(v) {
+  const r = await api(`/api/case/${enc(S.slug)}/reports`);
+  if (!r.files.some((f) => f.file === "CROSSREF.md")) {
+    v.innerHTML = `<div class="empty">No cross-return page yet. It is written when two or more returns are included and the analysis has run. ${S.c && S.c.counts && S.c.counts.returns > 1 ? "Run the analysis to produce it." : "Add another return in Files to compare."}</div>`;
+    return;
+  }
+  const rep = await api(`/api/case/${enc(S.slug)}/report?file=CROSSREF.md`);
+  v.innerHTML = `<div class="row" style="margin-bottom:10px"><span class="small muted">Only what the returns have in common. Checks that found nothing are in the analysis, Appendix A. Exclude a return in Returns and run again to re-compare.</span></div><div class="report" id="xrep">${rep.html}</div>`;
+  fixReportLinks($("#xrep"), "CROSSREF.md");
+}
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const MAP_COLORS = ["#0072b2", "#e69f00", "#009e73", "#d55e00", "#cc79a7", "#56b4e9", "#b3a000", "#444444"];
+function mapSvg(d, W, H) {
+  const pts = [];
+  d.sites.forEach((s) => pts.push([s.lat, s.lon]));
+  d.targets.forEach((t) => t.points.forEach((p) => pts.push([p[0], p[1]])));
+  d.estimates.forEach((p) => pts.push([p[0], p[1]]));
+  let la0 = Math.min(...pts.map((p) => p[0])), la1 = Math.max(...pts.map((p) => p[0]));
+  let lo0 = Math.min(...pts.map((p) => p[1])), lo1 = Math.max(...pts.map((p) => p[1]));
+  const kx = Math.cos(((la0 + la1) / 2) * Math.PI / 180);
+  let w = Math.max((lo1 - lo0) * kx, 0.004), h = Math.max(la1 - la0, 0.004);
+  const pad = 36, sc = Math.min((W - 2 * pad) / w, (H - 2 * pad) / h);
+  const cx = (lo0 + lo1) / 2, cy = (la0 + la1) / 2;
+  const X = (lo) => W / 2 + (lo - cx) * kx * sc, Y = (la) => H / 2 - (la - cy) * sc;
+  const kmPerDeg = 111.32, pxPerKm = sc / kmPerDeg;
+  let km = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500].find((k) => k * pxPerKm >= 70) || 500;
+  const o = [`<svg xmlns="${SVGNS}" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Cell sites and records, no basemap" style="background:var(--sheet);border:1px solid var(--rule);border-radius:6px">`];
+  o.push(`<rect x="${pad / 2}" y="${pad / 2}" width="${W - pad}" height="${H - pad}" fill="none" stroke="#bbb" stroke-dasharray="3 4"/>`);
+  d.sites.forEach((s) => {
+    const sx = X(s.lon), sy = Y(s.lat), seen = {};
+    s.cells.forEach((c) => {
+      if (c.az == null || seen[c.az + "/" + c.bw]) return; seen[c.az + "/" + c.bw] = 1;
+      const L = Math.max(14, Math.min(46, pxPerKm * 1.0)), a0 = (c.az - (c.bw || 60) / 2) * Math.PI / 180, a1 = (c.az + (c.bw || 60) / 2) * Math.PI / 180;
+      const p0 = [sx + L * Math.sin(a0), sy - L * Math.cos(a0)], p1 = [sx + L * Math.sin(a1), sy - L * Math.cos(a1)];
+      o.push(`<path d="M${sx},${sy} L${p0[0]},${p0[1]} A${L},${L} 0 0 1 ${p1[0]},${p1[1]} Z" fill="#888" fill-opacity=".18" stroke="#777" stroke-width=".7"><title>${esc(c.cell)} azimuth ${c.az} (wedge length is a drawing aid)</title></path>`);
+    });
+    o.push(`<rect x="${sx - 4}" y="${sy - 4}" width="8" height="8" fill="#333"><title>${esc((s.name || s.cells[0].cell) + " - " + s.n + " record(s) - " + s.cells.map((c) => c.cell).join(", "))}</title></rect>`);
+  });
+  d.targets.forEach((t, i) => {
+    const col = MAP_COLORS[i % MAP_COLORS.length];
+    t.points.forEach((p) => o.push(`<circle cx="${X(p[1]).toFixed(1)}" cy="${Y(p[0]).toFixed(1)}" r="3" fill="${col}" fill-opacity=".55"><title>${esc(t.target + " " + (p[2] || "") + " UTC, cell " + (p[3] || "?") + (p[4] ? ", " + p[4] : "") + " " + (p[5] || ""))}</title></circle>`));
+  });
+  d.estimates.forEach((p) => o.push(`<path d="M${X(p[1]) - 4},${Y(p[0]) - 4} l8,8 m0,-8 l-8,8" stroke="#c0392b" stroke-width="1.6"><title>${esc("device estimate " + (p[2] || "") + " UTC " + (p[3] || "") + " " + (p[5] || "") + " " + (p[6] || ""))}</title></path>`));
+  const bx = pad, by = H - pad / 2 - 6, bl = km * pxPerKm;
+  o.push(`<g font-size="12" fill="#333"><line x1="${bx}" y1="${by}" x2="${bx + bl}" y2="${by}" stroke="#333" stroke-width="2"/><text x="${bx}" y="${by - 6}">${km} km</text>`);
+  o.push(`<text x="${W - pad}" y="${pad - 10}" text-anchor="end">N &#8593;</text></g></svg>`);
+  return o.join("");
+}
+async function viewMap(v) {
+  const d = await api(`/api/case/${enc(S.slug)}/map`);
+  const st = d.status;
+  if (!st.telecom) { v.innerHTML = `<div class="empty">${esc(st.reason || "No telecom records in this case.")}</div>`; return; }
+  if (!st.map) {
+    v.innerHTML = `<div class="alertbox">No map can be drawn. ${esc(st.reason)}</div><p class="small muted">Nothing is guessed: records without coordinates are left off the map. The records themselves are in the Findings and in exports/telecom_records.csv.</p>`;
+    return;
+  }
+  const names = d.targets.map((t, i) => `<span class="small" style="margin-right:14px"><span style="display:inline-block;width:10px;height:10px;border-radius:5px;background:${MAP_COLORS[i % MAP_COLORS.length]};margin-right:5px"></span>${esc(t.target)} (${t.records.toLocaleString()} record${t.records === 1 ? "" : "s"}${t.drawn < t.records ? `, ${t.drawn} shown` : ""})</span>`).join("");
+  v.innerHTML = `<div class="small muted" style="margin-bottom:8px">Each dot is the <b>cell site that served a record</b>, not the phone's position. Squares are cell sites; grey wedges are sector directions (length is a drawing aid, not coverage); red crosses are carrier position estimates for the device. No basemap is drawn (nothing leaves this computer). ${st.reason ? esc(st.reason) + " " : ""}${d.kml ? `For streets and satellite imagery open the KML in Google Earth Pro: <a href="/case/${enc(S.slug)}/file/exports/telecom.kml">telecom.kml</a> &middot; <a href="/case/${enc(S.slug)}/file/exports/telecom.geojson">telecom.geojson</a> (QGIS/ArcGIS).` : ""}</div>
+    <div style="margin-bottom:8px">${names}</div>${mapSvg(d, 1100, 640)}
+    <div class="small muted" style="margin-top:6px">${d.sites.length} cell site${d.sites.length === 1 ? "" : "s"} used; ${st.located.toLocaleString()} of ${st.records.toLocaleString()} telecom records located. Hover a point for its time, cell, return and citation.</div>`;
+}
 
 route();

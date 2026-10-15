@@ -400,7 +400,7 @@ class Telecom(Analysis):
             t_last = min(last[3]["ts_utc"], last[4]["ts_utc"])
             stmt = (f"Targets {ta} and {tb} used cell sites at the same location (within {int(dmax * 1000)} m) within "
                     f"{int(win // 60)} minutes of each other on {plural(len(eps), 'occasion')}"
-                    + (f", first {T(t_first)}, last {T(t_last)}" if len(eps) > 1 else f", {T(t_first)}") + ". Closest in time: {a['target']} at {T(a['ts_utc'])} on cell {a['cell']} and "
+                    + (f", first {T(t_first)}, last {T(t_last)}" if len(eps) > 1 else f", {T(t_first)}") + f". Closest in time: {a['target']} at {T(a['ts_utc'])} on cell {a['cell']} and "
                     f"{b['target']} at {T(b['ts_utc'])} on cell {b['cell']}, {human_delta(gap)} apart, sites {dist}. "
                     f"This shows both phones were served by co-located cell sites; it does not show the users were together.")
             table = []

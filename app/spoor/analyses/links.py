@@ -128,7 +128,10 @@ class Links(Analysis):
             srcs = self.labels({p["source_id"] for p in per})
             accs = sorted({p["account"] for p in per if p["account"]})
             label = KIND_LABELS.get(r["kind"], r["kind"])
-            stmt = (f"{label[0].upper() + label[1:]} {r['norm']} appears in {plural(r['events'], 'record')} across {plural(r['sources'], 'source')} ({srcs})"
+            pv = self.prov.of_ident(r["kind"], r["norm"])
+            where_txt = (f"in {self.prov.phrase(pv)}, {plural(r['sources'], 'file')} ({srcs})" if self.multi
+                         else f"across {plural(r['sources'], 'source')} ({srcs})")
+            stmt = (f"{label[0].upper() + label[1:]} {r['norm']} appears in {plural(r['events'], 'record')} {where_txt}"
                     + (f" and in records of {plural(len(accs), 'account')}: {', '.join(accs[:10])}" if accs else "")
                     + (f"; {T(r['first_utc'])} to {T(r['last_utc'])}" if r["first_utc"] else "") + ".")
             ev = []
@@ -141,11 +144,13 @@ class Links(Analysis):
             prio = 1 if (len(accs) >= 2 or r["kind"] in ("btc", "eth", "ltc", "trx", "xmr", "doge", "phone", "email")) else 2
             self.add("shared_identifier", f"{label} {r['norm']}: {plural(r['sources'], 'source')}, {plural(len(accs), 'account')}", stmt,
                      {"values": {"kind": r["kind"], "value": r["norm"], "validity": r["validity"], "records": r["events"],
-                                 "sources": r["sources"], "source_labels": srcs, "accounts": accs[:20], "account_count": len(accs),
+                                 "sources": r["sources"], "source_labels": srcs, "returns": self.prov.labels(pv), "return_count": len(pv),
+                                 "accounts": accs[:20], "account_count": len(accs),
                                  "first_utc": r["first_utc"], "last_utc": r["last_utc"]},
                       "tables": [{"title": "Occurrences by source and account", "columns": ["source", "account", "records", "first_utc", "last_utc"],
                                   "rows": [[self.labels([p["source_id"]]), p["account"], p["n"], p["f"], p["l"]] for p in per[: self.trows]],
-                                  "total_rows": len(per)}]},
+                                  "total_rows": len(per)}] + ([{"title": "Returns", "columns": ["return", "name", "records", "first_utc", "last_utc"],
+                                                               "rows": [[x[0], self.prov.name(x[0]), x[1], x[2], x[3]] for x in pv]}] if self.multi else [])},
                      sql=f"SELECT kind, value, cite, ts_utc, account FROM ids WHERE kind='{r['kind']}' AND value={sq(r['norm'])} ORDER BY ts_utc",
                      evidence=ev, priority=prio, sort_key=f"2{9 - min(len(accs), 9)}{9 - min(r['sources'], 9)}{r['norm']}")
 

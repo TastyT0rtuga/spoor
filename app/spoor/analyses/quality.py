@@ -26,7 +26,15 @@ class Quality(Analysis):
     category = "Sources & data quality"
 
     def run(self):
-        srcs = self.q("SELECT * FROM sources ORDER BY id")
+        for r in self.q("SELECT * FROM returns WHERE state != 'active' ORDER BY id"):
+            n = self.one("SELECT COUNT(*) FROM sources WHERE return_id=? AND status != 'container'", (r["id"],)) or 0
+            word = "excluded from" if r["state"] == "excluded" else "removed from"
+            self.add("return_excluded", f"{r['label']} {word} this analysis",
+                     f"{r['label']} ({r['name']}), {plural(n, 'file')}, was {word} this analysis by the analyst on {r['state_at']}. "
+                     f"None of its records are in any finding, table, figure or count in this report; the files were not changed.",
+                     {"values": {"return": r["label"], "name": r["name"], "state": r["state"], "files": n, "at": r["state_at"],
+                                 "reason": r["note"] or ""}}, priority=2, sort_key=f"0{r['label']}")
+        srcs = self.q("SELECT * FROM sources WHERE status != 'excluded' ORDER BY id")
         for s in srcs:
             cfg = json.loads(s["config"]) if s.get("config") else {}
             st = json.loads(s["stats"]) if s.get("stats") else {}

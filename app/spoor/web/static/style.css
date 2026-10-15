@@ -133,7 +133,7 @@ table.t tr.sel td { background: var(--trail-soft); }
 .status { font-size: 13px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--rule); white-space: nowrap; }
 .status.ingested, .status.done, .status.pass, .status.accepted { color: var(--trail); border-color: var(--trail); }
 .status.error, .status.fail, .status.rejected, .status.unsupported { color: var(--p1); border-color: var(--p1); }
-.status.flagged, .status.duplicate, .status.skipped, .status.interrupted, .status.cancelled { color: var(--flag); border-color: var(--flag); }
+.status.flagged, .status.duplicate, .status.skipped, .status.excluded, .status.interrupted, .status.cancelled { color: var(--flag); border-color: var(--flag); }
 
 /* findings */
 .split { display: grid; grid-template-columns: minmax(300px, 38%) 1fr; gap: 18px; align-items: start; }
@@ -218,3 +218,9 @@ pre.sql, pre.raw { background: var(--paper); border: 1px solid var(--rule); bord
 .report svg.figure [data-cite], .report svg.figure [data-finding] { cursor: pointer; }
 .report svg.figure .marker:hover rect, .report svg.figure .cite:hover rect { stroke: var(--ink); }
 .report svg.figure:focus { outline: 2px solid var(--link); outline-offset: 2px; }
+
+/* returns */
+.panel.ret { margin-bottom: 12px; }
+.panel.ret.excluded { opacity: .78; border-style: dashed; }
+.panel.ret.removed { opacity: .6; }
+.retname { font-weight: 700; }

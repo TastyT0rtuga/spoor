@@ -159,6 +159,8 @@ def api_case(h, q, body, slug):
             "findings": dbm.one(con, "SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL"),
             "p1": dbm.one(con, "SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL AND priority=1"),
             "asks": dbm.one(con, "SELECT COUNT(*) FROM asks"),
+            "returns": dbm.one(con, "SELECT COUNT(*) FROM returns WHERE state='active'"),
+            "returns_all": dbm.one(con, "SELECT COUNT(*) FROM returns WHERE state != 'removed'"),
         }
         span = con.execute("SELECT MIN(ts_utc), MAX(ts_utc) FROM events WHERE ts_epoch IS NOT NULL AND "
                            "(ts_flag IS NULL OR ts_flag NOT LIKE '%implausible_year%')").fetchone()
@@ -167,6 +169,7 @@ def api_case(h, q, body, slug):
         return {"slug": c.slug, "info": c.info, "params": c.params, "counts": counts, "span": list(span) if span else None,
                 "key_findings": key, "jobs": jobs, "status_text": status_text(c, con, False),
                 "citation_check": dbm.get_meta(con, "citation_check"), "narrative": dbm.get_meta(con, "narrative"),
+                "returns_changed": dbm.get_meta(con, "returns_changed"),
                 "report_ready": (c.report_dir / "REPORT.md").exists(), "case_dir": str(c.dir), "report_dir": str(c.report_dir)}
     finally:
         con.close()
@@ -192,21 +195,70 @@ def api_case_settings(h, q, body, slug):
     return {"ok": True, "params": c.params}
 
 
+@route("GET", r"/api/case/([^/]+)/returns")
+def api_returns(h, q, body, slug):
+    from .. import returns as rets
+    from ..jobs import active_job
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        rows = rets.return_rows(con)
+        for r in rows:
+            r["files"] = [{"label": f["label"], "name": f["member"] or Path(f["path"]).name, "status": f["status"], "rows": f["rows"], "kind": f["kind"]}
+                          for f in r["files"]]
+        return {"returns": rows, "changed": dbm.get_meta(con, "returns_changed"),
+                "running": bool(active_job(con, "run"))}
+    finally:
+        con.close()
+
+
+@route("POST", r"/api/case/([^/]+)/returns")
+def api_returns_change(h, q, body, slug):
+    """action: exclude | include | remove | restore | rename | move  (see returns.py). Takes effect on the next run."""
+    from .. import returns as rets
+    from ..jobs import active_job
+    c = _case(slug)
+    con = c.db()
+    try:
+        if active_job(con, "run"):
+            raise ApiError("An analysis is running for this case. Stop it, or wait until it finishes, before changing the returns.", 409)
+        act = body.get("action")
+        try:
+            if act in ("exclude", "include", "remove", "restore"):
+                st = {"exclude": "excluded", "include": "active", "restore": "active", "remove": "removed"}[act]
+                for ref in (body.get("refs") or [body.get("ref")]):
+                    rets.set_state(con, c, ref, st, (body.get("reason") or "").strip())
+            elif act == "rename":
+                rets.rename(con, c, body.get("ref"), body.get("name"), body.get("note"))
+            elif act == "move":
+                rets.move_source(con, c, body.get("source"), body.get("to") or None, body.get("name") or "")
+            else:
+                raise ApiError("unknown action")
+        except ValueError as e:
+            raise ApiError(str(e)) from e
+        return {"ok": True, "changed": dbm.get_meta(con, "returns_changed"),
+                "note": "Saved. Run the analysis again for the change to take effect; nothing in the current report has changed yet."}
+    finally:
+        con.close()
+
+
 @route("GET", r"/api/case/([^/]+)/sources")
 def api_sources(h, q, body, slug):
     c = _case(slug)
     con = c.db(readonly=True)
     try:
         out = []
+        rmap = {r[0]: r[1] for r in con.execute("SELECT id, label FROM returns")}
         for s in source_rows(con):
             cfg = s["config"] or {}
             st = s["stats"] or {}
+            s["ret"] = rmap.get(s.get("return_id"))
             out.append({"label": s["label"], "name": s["name"], "display": s["display"], "kind": s["kind"], "size": s["size"],
                         "status": s["status"], "rows": s["rows"], "error": s["error"], "sha256": s["sha256"],
                         "tz": cfg.get("tz"), "tz_assumed": cfg.get("tz_assumed"), "default_account": cfg.get("default_account"),
                         "skip": cfg.get("skip"), "ts_failed": st.get("ts_failed", 0),
                         "flags": st.get("flags") or {}, "changed": s["status"] == "ingested" and s["ingested_rev"] != s["config_rev"],
-                        "parent": s["parent_id"]})
+                        "parent": s["parent_id"], "ret": s["ret"]})
         return {"sources": out}
     finally:
         con.close()
@@ -501,15 +553,23 @@ def api_ask_get(h, q, body, slug, aid):
 @route("GET", r"/api/case/([^/]+)/reports")
 def api_reports(h, q, body, slug):
     c = _case(slug)
-    order = ["REPORT.md", "FIGURES.md", "REVIEW.md", "FINDINGS.md", "EVIDENCE.md", "SOURCES.md", "TIMELINE.md", "METHODS.md", "CITATION_CHECK.md"]
+    order = ["REPORT.md", "CROSSREF.md", "FIGURES.md", "REVIEW.md", "FINDINGS.md", "EVIDENCE.md", "SOURCES.md", "TIMELINE.md", "METHODS.md", "CITATION_CHECK.md"]
     files = []
     if c.report_dir.exists():
         for p in sorted(c.report_dir.rglob("*.md")):
             rel = p.relative_to(c.report_dir).as_posix()
             files.append({"file": rel, "size": p.stat().st_size, "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime))})
     files.sort(key=lambda f: (order.index(f["file"]) if f["file"] in order else 99, f["file"]))
-    exports = sorted(p.relative_to(c.report_dir).as_posix() for p in (c.report_dir / "exports").glob("*.csv")) if (c.report_dir / "exports").exists() else []
+    exports = sorted(p.relative_to(c.report_dir).as_posix() for p in (c.report_dir / "exports").glob("*") if p.suffix.lower() in (".csv", ".kml", ".geojson")) if (c.report_dir / "exports").exists() else []
     return {"files": files, "exports": exports, "progress_md": (c.dir / "PROGRESS.md").exists()}
+
+
+@route("GET", r"/api/case/([^/]+)/map")
+def api_map(h, q, body, slug):
+    from ..mapdata import map_data
+    c = _case(slug)
+    con = c.db()
+    return map_data(con, c.params)
 
 
 @route("GET", r"/api/case/([^/]+)/report")

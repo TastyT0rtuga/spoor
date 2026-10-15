@@ -51,7 +51,8 @@ class Logins(Analysis):
             stmt = (f"Account {acc}: " + ", ".join(bits) + f", from {plural(a['ips'], 'distinct IP')} ({fmt_int(a['pub'])} public"
                     + (f", {fmt_int(a['doc'])} in documentation ranges" if a["doc"] else "") + ")"
                     + (f" and {plural(a['uas'], 'user agent')}" if a["uas"] else "")
-                    + (f", {T(a['f'])} to {T(a['l'])}" if a["f"] else "") + f" (sources: {plural(a['srcs'], 'source')}).")
+                    + (f", {T(a['f'])} to {T(a['l'])}" if a["f"] else "")
+                    + (f" (returns: {self.prov.tags(self.prov.of_account(acc))})." if self.multi else f" (sources: {plural(a['srcs'], 'source')})."))
             ev = self.sample(f"account=? AND category IN {LOGIN_CATS}", (acc,), self.nsamp)
             tables = [{"title": "Most-used IPs", "columns": ["ip", "events", "first_utc", "last_utc", "network", "country"],
                        "rows": [[t["ip"], t["n"], t["f"], t["l"], t["as_org"], t["country"]] for t in top_ips]}]
@@ -61,7 +62,8 @@ class Logins(Analysis):
             self.add("account_logins", f"Account {acc}: login activity", stmt,
                      {"values": {"account": acc, "logins": a["li"], "failed": a["lf"], "logouts": a["lo"], "changes": a["ch"],
                                  "registrations": a["rg"], "ips": a["ips"], "public_ips": a["pub"], "documentation_ips": a["doc"], "user_agents": a["uas"],
-                                 "first_utc": a["f"], "last_utc": a["l"], "sources": a["srcs"]}, "tables": tables},
+                                 "first_utc": a["f"], "last_utc": a["l"], "sources": a["srcs"],
+                                 "returns": self.prov.labels(self.prov.of_account(acc))}, "tables": tables},
                      sql=f"SELECT cite, ts_utc, category, action, ip, user_agent FROM ev WHERE account={sq(acc)} AND category IN {LOGIN_CATS} ORDER BY ts_utc",
                      evidence=ev, priority=2, sort_key=f"5{10**9 - (a['li'] + a['lf']):010d}{acc}")
 

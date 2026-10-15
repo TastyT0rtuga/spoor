@@ -310,7 +310,10 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
         con.commit()
 
     prog.stage("prepare")
+    from . import returns as returns_mod
+    returns_mod.apply_states(case, con, log)       # leave out excluded returns, put back included ones
     ingest.prepare_sources(case, con, prog, log)
+    returns_mod.apply_states(case, con, log)       # ZIP members extracted just now, and duplicates among active returns
     mark("prepare")
 
     prog.stage("scan")
@@ -376,6 +379,8 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     n = number_findings(con)
     from .kml import write_kml
     write_kml(case, con, p)           # after numbering, so co-location points carry their finding IDs
+    from .mapdata import write_geojson
+    write_geojson(case, con, p)
     from .figures import invalidate as invalidate_figures
     invalidate_figures(case, con)     # figures are redrawn from the new findings in the Figures stage
     fp = findings_fingerprint(con)
