@@ -67,6 +67,15 @@ def main(argv=None):
     s.add_argument("--reason", default="", help="why (kept in the audit log and the report)")
     s.add_argument("--run", action="store_true", help="re-run the analysis straight away (in this window)")
     s.add_argument("--no-llm", action="store_true")
+    s = sub.add_parser("links", help="telecom: chains of contacts linking two or more numbers (or tower dumps)")
+    s.add_argument("case")
+    s.add_argument("members", nargs="*", help="numbers in any format, 'dump:S08' for a tower dump, 'imei:...' with --devices; "
+                                               "none: list what can be chosen")
+    s.add_argument("--hops", type=int, default=6, help="longest chain searched (default 6)")
+    s.add_argument("--slack", type=int, default=0, help="also list chains up to N hops longer than the shortest")
+    s.add_argument("--devices", action="store_true", help="also link numbers that used the same handset (IMEI)")
+    s.add_argument("--save", metavar="NAME", help="save the group; it is reported (with citations) on every run")
+    s.add_argument("--delete", metavar="NAME", help="delete a saved group")
     s = sub.add_parser("run", help="run (or resume) the full analysis in the background")
     s.add_argument("case")
     s.add_argument("--no-llm", action="store_true", help="skip the AI-drafted summary")
@@ -166,6 +175,60 @@ def main(argv=None):
             from .jobs import start_job, status_text
             start_job(c, con, "run", {"llm": not a.no_llm}, wait=True)
             print(status_text(c, c.db(), markdown=False))
+    elif cmd == "links":
+        from .contactgraph import Graph, node_label, path_text
+        c = _case(a.case)
+        if a.delete:
+            cur = dict(c.info.get("params") or {})
+            cur["tel_link_sets"] = [s for s in (cur.get("tel_link_sets") or []) if s.get("name") != a.delete]
+            c.info["params"] = cur
+            c.save()
+            print(f"deleted link group '{a.delete}'")
+            return
+        con = c.db(readonly=True)
+        g = Graph(con, c.params, dumps=True, devices=a.devices)
+        if len(a.members) < 2:
+            ch = g.choices()
+            print("Targets (numbers whose call records are in the case):")
+            for t in ch["targets"]:
+                print(f"  {t['id']:16} {t['contacts']:5} contacts {t['records']:7} records")
+            for d in ch["dumps"]:
+                print(f"  {d['id']:16} tower dump {d['label']} ({d['phones']} phones)")
+            for s_ in c.params.get("tel_link_sets") or []:
+                print(f"  saved group '{s_['name']}': {', '.join(s_['members'])}")
+            print(f"\n{ch['numbers']} numbers in all. Usage: spoor links \"{c.slug}\" NUMBER NUMBER [dump:S08 ...] [--hops 6]")
+            return
+        seeds, missing = [], []
+        for x in a.members:
+            n = g.find(x)
+            (seeds.append(n) if n else missing.append(x))
+        if missing:
+            print("not in the records: " + ", ".join(missing))
+        res = g.connect(list(dict.fromkeys(seeds)), a.hops, a.slack, 25)
+        cites = g.cites([x for k in res["edges"] for x in (g.edges[k]["first_id"], g.edges[k]["last_id"])])
+        for pr in res["pairs"]:
+            head = f"{node_label(pr['a'])}  <->  {node_label(pr['b'])}: "
+            if pr["hops"] is None:
+                print(head + f"not linked within {a.hops} hops")
+                continue
+            print(head + f"{pr['hops']} hop{'s' if pr['hops'] != 1 else ''}, {len(pr['paths'])} chain{'s' if len(pr['paths']) != 1 else ''}"
+                  + (" (more not listed)" if pr["more"] else ""))
+            for p_ in pr["paths"]:
+                print("    " + path_text(g, p_, cites))
+        if res["through"]:
+            print("\nNumbers on the chains (pairs linked through each):")
+            for n, v in sorted(res["through"].items(), key=lambda kv: (-len(kv[1]["pairs"]), -kv[1]["paths"], kv[0]))[:20]:
+                print(f"  {node_label(n):18} {len(v['pairs'])} pair(s), {v['paths']} chain(s)")
+        if res["left_out"]:
+            print("\nNot used as links: " + "; ".join(f"{x['node']} ({x['reason']})" for x in res["left_out"][:15]))
+        if a.save:
+            cur = dict(c.info.get("params") or {})
+            sets = [s_ for s_ in (cur.get("tel_link_sets") or []) if s_.get("name") != a.save]
+            sets.append({"name": a.save, "members": seeds, "max_hops": a.hops, "slack": a.slack})
+            cur["tel_link_sets"] = sets
+            c.info["params"] = cur
+            c.save()
+            print(f"\nsaved as link group '{a.save}' - it is reported on the next run")
     elif cmd == "run":
         from .jobs import start_job
         c = _case(a.case)

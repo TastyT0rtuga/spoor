@@ -632,6 +632,70 @@ def report_tests():
     ok(not [r[0] for r in tcon.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "telecom case: no analysis module failed")
 
 
+def links_tests():
+    """Contact chains ('degrees of separation') across call-record returns and a tower dump (demo/links, fictional)."""
+    import json as _json
+    sys.path.insert(0, str(ROOT / "tests"))
+    import make_links_demo as mld
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-links-"))
+    mld.R.seed(20261014)
+    mld._used.clear()
+    mld._used.update({mld.T1, mld.T3, mld.T6, mld.X1, mld.X2, mld.X3, mld.D1, mld.D2})
+    mld.main(str(tmp / "gen"))
+    bundled = ROOT / "demo" / "links"
+    ok(all((tmp / "gen" / p.relative_to(bundled)).read_bytes() == p.read_bytes() for p in bundled.rglob("*") if p.is_file()),
+       "links demo generator reproduces the bundled files")
+    c, con = _figure_case(tmp / "case", "Links", bundled, params={"figures": False},
+                          case_params={"tel_link_sets": [{"name": "BG1-BG6-dump", "members": ["(703) 555-0201", "571.555.0206", "dump:ReportTOWER_0000091"]}]})
+    ok(not [r[0] for r in con.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "links case: no analysis module failed")
+    from spoor.contactgraph import Graph
+    g = Graph(con, c.params)
+    T1, T3, T6, X1, X2, X3 = (g.find(x) for x in (mld.T1, mld.T3, mld.T6, mld.X1, mld.X2, mld.X3))
+    ok(T1 == "+17035550201" and g.find("703-555-0201") == T1, "numbers are found in any format")
+    r = g.connect([T1, T6], 6)
+    pr = r["pairs"][0]
+    ok(pr["hops"] == 4 and pr["paths"] == [[T1, X1, T3, X2, T6], [T1, X3, T3, X2, T6]], f"T1 to T6: 4 hops, both planted chains ({pr['hops']}, {len(pr['paths'])})")
+    ok(r == g.connect([T1, T6], 6), "same choice, same chains (deterministic)")
+    ok(any(x["node"] == "611" for x in r["left_out"]) and all("611" not in p for p in pr["paths"]), "short code 611 is never used as a link")
+    DN = g.find("dump:reporttower")
+    r3 = g.connect([T1, T6, DN], 6)
+    hops = {(p["a"], p["b"]): p["hops"] for p in r3["pairs"]}
+    ok(hops == {(T1, T6): 4, (T1, DN): 3, (T6, DN): 3}, f"three-way link with a tower dump ({hops})")
+    ok(all(DN not in p[1:-1] for pp in r3["pairs"] for p in pp["paths"]), "a tower dump is never a stepping stone")
+    ok(g.connect([T1, T6], 3)["pairs"][0]["hops"] is None, "not linked when the longest chain allowed is too short")
+    g2 = Graph(con, dict(c.params, tel_hub_max=2))
+    r2 = g2.connect([T1, T6], 6)
+    ok(r2["pairs"][0]["hops"] is None and any(x["node"] == X2 for x in r2["left_out"]), "contacts with more neighbours than tel_hub_max are not links, and are listed")
+    def facts(kind):
+        return [_json.loads(f)["values"] for (f,) in con.execute("SELECT facts FROM findings WHERE kind=? AND fid IS NOT NULL ORDER BY fid", (kind,))]
+    tp = facts("telecom_path")
+    ok(len(tp) == 1 and tp[0]["hops"] == 4 and tp[0]["chains"] == 2, "finding: the two targets linked only through a 4-hop chain")
+    ev = con.execute("SELECT COUNT(*) FROM finding_evidence fe JOIN findings f ON f.id=fe.finding_id WHERE f.kind='telecom_path'").fetchone()[0]
+    ok(ev == 4, f"the chain finding cites one record per hop ({ev})")
+    dp = {(v["target"], tuple(v["chain"][1:-1])) for v in facts("telecom_dump_path")}
+    ok((T1, ("+14105550222", X1)) in dp and (T6, ("+14105550221", X2)) in dp, "finding: tower-dump phones linked to targets through a contact")
+    ok(all(v["other"] != "611" for v in facts("telecom_common")), "short code 611 is not reported as a common contact")
+    ls = facts("telecom_link_set")
+    ok(len(ls) == 1 and [p[2] for p in ls[0]["pairs"]] == [4, 3, 3] and not ls[0]["missing"], "saved link group reported with its chains")
+    cc = dbm_meta(con, "citation_check")
+    ok(cc.get("total", 0) > 0 and cc.get("fail", 1) == 0, "links case: every citation re-read and matched")
+    rep = (c.report_dir / "REPORT.md").read_text(encoding="utf-8")
+    ok("linked in 4 hops" in rep[: rep.find("## References")], "the 4-hop chain is in the analysis text")
+    from spoor.web import server as srv
+    res = srv.api_links(None, {}, {"seeds": ["7035550201", "5715550206"], "max_hops": 6}, "Links")
+    ok(res["pairs"][0]["hops"] == 4 and all(e["first_cite"] for e in res["edges"]), "Links API: chains with a citation on every hop")
+    try:
+        srv.api_links(None, {}, {"seeds": ["7035550201"]}, "Links")
+        ok(False, "Links API refuses a single number")
+    except srv.ApiError:
+        ok(True, "Links API refuses a single number")
+
+
+def dbm_meta(con, key):
+    from spoor import db as dbm
+    return dbm.get_meta(con, key) or {}
+
+
 def web_smoke():
     tmp = Path(tempfile.mkdtemp(prefix="spoor-web-"))
     os.environ["SPOOR_CASES"] = str(tmp / "cases")
@@ -697,6 +761,8 @@ def main():
     telecom_tests()
     print("\n[carrier layouts]")
     carrier_layout_tests()
+    print("\n[contact chains]")
+    links_tests()
     print("\n[returns, cross-reference, report]")
     report_tests()
     print("\n[reference cell-site library]")

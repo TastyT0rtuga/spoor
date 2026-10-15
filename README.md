@@ -169,7 +169,7 @@ returns. Set **CPU threads** to 8 (the P-cores).
 | Identifiers | every email, phone, Bitcoin/Ethereum/TRON/Litecoin/Dogecoin/Monero address, MAC, IMEI and URL, kept only when its checksum verifies (Base58Check, Bech32/Bech32m, EIP-55, Luhn) |
 | Counterparties | most frequent counterparties per account; largest amounts (totals only within one currency) |
 | Watchlists | hits against your own lists of IPs, ranges and identifiers (format in `watchlists\README.txt`; README files are not read as lists) |
-| Calls, texts & cell sites | for any number of telecom returns at once: per-target totals, top contacts and minutes; **direct contact between targets**; **numbers in contact with 2+ targets** and a target-by-target table of contacts in common; **IMEIs/IMSIs on 2+ targets** and handset/SIM changes in time order; **co-location** (two targets served by cell sites within 100 m within 15 minutes, across carriers by coordinates); **tower dumps** from any number of carriers grouped into scenes, with the **phones and handsets seen at 2+ scenes** and dump phones that are targets or their contacts; timing-advance and ping location estimates; the KML; how every record was read and located |
+| Calls, texts & cell sites | for any number of telecom returns at once: per-target totals, top contacts and minutes; **direct contact between targets**; **numbers in contact with 2+ targets** and a target-by-target table of contacts in common; **IMEIs/IMSIs on 2+ targets** and handset/SIM changes in time order; **co-location** (two targets served by cell sites within 100 m within 15 minutes, across carriers by coordinates); **tower dumps** from any number of carriers grouped into scenes, with the **phones and handsets seen at 2+ scenes** and dump phones that are targets or their contacts; **contact chains** ("degrees of separation": targets linked only through other people, tower-dump phones linked to targets through a contact, and your own saved link groups; Links screen); timing-advance and ping location estimates; the KML; how every record was read and located |
 
 Thresholds (burst size, gap length, windows…) are under **Settings → Analysis settings** and are
 recorded in each case's `METHODS.md`.
@@ -263,6 +263,8 @@ spoor-cli lookup "Case name" --ip 198.51.100.0/24 --from 2024-04-01 --to 2024-04
 spoor-cli ask "Case name" "Which IPs logged in to x@example.com in April 2024?"
 spoor-cli report "Case name"         (rewrite the Markdown from current results)
 spoor-cli figures "Case name"        (redraw the figures from current results, then rewrite the Markdown)
+spoor-cli returns "Case name" exclude R03 --reason "duplicate production"   (include / rename / move; list with no action)
+spoor-cli links "Case name" 7035550201 5715550206 dump:S08 --hops 6 [--save "BG1-BG6"]
 spoor-cli selftest
 ```
 

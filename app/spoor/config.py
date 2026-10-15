@@ -29,6 +29,9 @@ DEFAULT_PARAMS = {
     "tel_same_site_km": 0.1,         # cell sites this close are treated as one site (co-location, tower-list agreement)
     "tel_top_contacts": 10,          # contacts listed per target
     "tel_common_min_targets": 2,     # a contact shared by at least N targets is reported
+    "tel_path_max_hops": 6,          # contact chains between targets are searched up to N hops (calls/texts; 1 = direct contact)
+    "tel_hub_max": 25,               # a contact number with more than N different neighbours is not used as a link in a chain
+    "tel_link_sets": [],             # saved groups of numbers / tower dumps to link (set from the Links screen or `spoor links --save`)
     "tel_scene_gap_hours": 3,        # tower-dump records more than N hours apart belong to different scenes
     "tel_reference_library": True,   # look up cells the case's own lists miss in the cellsites/ library (if installed)
     "tel_carrier": "",               # carrier of the case's returns (e.g. "Verizon"); blank = from each file's name

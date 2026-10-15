@@ -224,3 +224,12 @@ pre.sql, pre.raw { background: var(--paper); border: 1px solid var(--rule); bord
 .panel.ret.excluded { opacity: .78; border-style: dashed; }
 .panel.ret.removed { opacity: .6; }
 .retname { font-weight: 700; }
+
+.lkgrid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+.lkside .lkopt { display: block; margin: 3px 0; }
+.lkhead { margin-top: 10px; font-weight: 600; color: var(--ink-soft, #405048); }
+.lkcols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+.lkchain { margin: 4px 0 8px; line-height: 1.9; }
+.lkhop { color: #6b7a73; font-size: 12px; }
+.lkset { margin: 2px 0; }
+@media (max-width: 900px) { .lkgrid, .lkcols { grid-template-columns: 1fr; } }

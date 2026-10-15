@@ -197,6 +197,15 @@ def methods_text(case, con) -> str:
               f"{p.get('tel_scene_gap_hours', 3)} hours starts a new scene); phones and handsets seen at two or more scenes, and dump "
               "phones that are targets or contacts of targets, are reported. A dump record shows that the phone used a dumped cell "
               "in that window, not that it was at a particular address.",
+              "- **Contact chains (degrees of separation).** Every call or text record joins its two numbers (call-detail returns and calls "
+              "seen in tower dumps). A chain between two numbers is the shortest sequence of such joins, found by breadth-first search "
+              f"up to {p.get('tel_path_max_hops', 6)} hops; all chains of that length are listed (up to 10 per pair), each hop with its "
+              "record count, returns and first/last citations. A hop is only visible where at least one end is a number whose records "
+              "were returned, so chains pass through targets and dump phones. Short codes (fewer than 7 digits) and contact numbers with "
+              f"more than {p.get('tel_hub_max', 25)} different neighbours are not used as links (they can still be chosen as endpoints), "
+              "and a tower dump is only ever an endpoint; what was left out is listed with each result. Chains of 3 or more hops between "
+              "targets, chains from tower-dump phones to targets through someone else, and the analyst's saved link groups "
+              "(Links screen) are reported. A chain shows contact one hop after another; it does not show that anything passed along it.",
               "- **Location estimates.** Timing-advance (end latitude/longitude, confidence) and ping positions are the carrier's "
               "estimate of where the DEVICE was. They are stored and drawn apart from cell sites, with the confidence as the carrier "
               "states it, and are not counted as calls or data use.",

@@ -11,7 +11,8 @@ NULL_KINDS = {"no_ips", "no_logins", "no_times", "no_identifiers", "crossref_non
 LEAD_KINDS = {"failed_burst", "multi_account_failures", "change_from_new_ip", "account_cluster", "notable_ip", "shared_infrastructure",
               "shared_identifier", "eth_bad_checksum", "watchlist_hit", "crossref_summary", "crossref_item",
               "telecom_direct", "telecom_overlap", "telecom_common", "telecom_shared_imei", "telecom_shared_imsi", "telecom_imei_change",
-              "telecom_imsi_change", "telecom_colocation", "telecom_dump_multi", "telecom_dump_imei", "telecom_dump_target"}
+              "telecom_imsi_change", "telecom_colocation", "telecom_dump_multi", "telecom_dump_imei", "telecom_dump_target",
+              "telecom_path", "telecom_dump_path", "telecom_link_set"}
 PATTERN_KINDS = {"network_switch", "gap", "hosting_networks", "hour_profile", "daily_volume", "largest_amounts", "changes_other"}
 
 THEMES = [
@@ -21,7 +22,8 @@ THEMES = [
     ("ident", "Shared identifiers", {"shared_identifier", "eth_bad_checksum"}),
     ("telecom", "Calls, texts and cell sites", {"telecom_direct", "telecom_overlap", "telecom_common", "telecom_shared_imei", "telecom_shared_imsi",
                                                  "telecom_imei_change", "telecom_imsi_change", "telecom_colocation", "telecom_dump_multi",
-                                                 "telecom_dump_imei", "telecom_dump_target"}),
+                                                 "telecom_dump_imei", "telecom_dump_target", "telecom_path",
+                                                 "telecom_dump_path", "telecom_link_set", "telecom_degrees"}),
     ("watch", "Watchlist matches", {"watchlist_hit"}),
     ("timing", "Timing and money", {"gap", "hour_profile", "daily_volume", "largest_amounts"}),
 ]
@@ -202,7 +204,33 @@ def _tel_imei(f, v, multi):
     return f"IMEI {v['imei']} was used by {v['target_count']} target numbers: {per}."
 
 
-BUILDERS = {"telecom_colocation": _coloc, "telecom_direct": _tel_direct, "telecom_common": _tel_common, "telecom_shared_imei": _tel_imei,
+def _tel_path(f, v, multi):
+    s = f"{v['a']} and {v['b']} have no direct or shared contact but are linked in {v['hops']} hops: {' - '.join(v['chain'])}"
+    if v.get("chains", 1) > 1:
+        s += f" ({v['chains']} chains of that length{', more not listed' if v.get('more') else ''})"
+    return s + "."
+
+
+def _dump_path(f, v, multi):
+    return (f"Tower dump {v['dump']}: {', '.join(v['phones'][:4])} {'is' if len(v['phones']) == 1 else 'are'} linked to target {v['target']} "
+            f"in {v['hops']} contact hops: {' - '.join(v['chain'][1:])}.")
+
+
+def _link_set(f, v, multi):
+    parts = [f"{a} and {b}: {f'{h} hop' + ('s' if h != 1 else '') if h else 'not linked'}" for a, b, h in v.get("pairs", [])]
+    s = f"Link group '{v['name']}': " + "; ".join(parts[:6]) + (" ..." if len(parts) > 6 else "")
+    if v.get("through"):
+        s += f"; most-used links: {', '.join(v['through'][:4])}"
+    return s + "."
+
+
+def _degrees(f, v, multi):
+    return (f"Across {v['pairs']} pairs of targets: {v['direct']} in direct contact, {v['shared_contact']} with a contact in common, "
+            f"{v['longer']} linked only through longer chains, {v['not_linked']} not linked within {v['max_hops']} hops.")
+
+
+BUILDERS = {"telecom_path": _tel_path, "telecom_dump_path": _dump_path, "telecom_link_set": _link_set, "telecom_degrees": _degrees,
+            "telecom_colocation": _coloc, "telecom_direct": _tel_direct, "telecom_common": _tel_common, "telecom_shared_imei": _tel_imei,
             "failed_burst": _failed_burst, "multi_account_failures": _multi_fail, "change_from_new_ip": _change,
             "account_cluster": _cluster, "notable_ip": _notable_ip, "shared_identifier": _shared_ident, "crossref_item": _crossref_item,
             "watchlist_hit": _watch, "gap": _gap, "network_switch": _switch, "crossref_summary": _crossref_summary}

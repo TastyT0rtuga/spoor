@@ -122,7 +122,7 @@ async function renderHome() {
 }
 
 /* ------------------------------------------------------------------ case shell */
-const VIEWS = [["overview", "Overview"], ["returns", "Returns"], ["sources", "Files"], ["findings", "Findings"], ["crossref", "Cross-reference"], ["map", "Map"], ["lookup", "Look up"], ["ask", "Ask"], ["reports", "Reports"], ["settings", "Settings"]];
+const VIEWS = [["overview", "Overview"], ["returns", "Returns"], ["sources", "Files"], ["findings", "Findings"], ["crossref", "Cross-reference"], ["map", "Map"], ["links", "Links"], ["lookup", "Look up"], ["ask", "Ask"], ["reports", "Reports"], ["settings", "Settings"]];
 
 async function renderCase() {
   const app = $("#app");
@@ -144,7 +144,7 @@ async function renderCase() {
   renderTrail();
   const v = $("#view");
   v.innerHTML = `<p class="muted">Loading…</p>`;
-  const fn = { overview: viewOverview, returns: viewReturns, crossref: viewCrossref, map: viewMap, sources: viewSources, findings: viewFindings, lookup: viewLookup, ask: viewAsk, reports: viewReports, settings: viewSettings }[S.view] || viewOverview;
+  const fn = { overview: viewOverview, returns: viewReturns, crossref: viewCrossref, map: viewMap, links: viewLinks, sources: viewSources, findings: viewFindings, lookup: viewLookup, ask: viewAsk, reports: viewReports, settings: viewSettings }[S.view] || viewOverview;
   try { await fn(v); } catch (e) { v.innerHTML = `<div class="alertbox">${esc(e.message)}</div>`; }
   schedulePoll();
 }
@@ -663,7 +663,7 @@ async function viewSettings(v) {
     <div class="field" style="flex:1"><label for="cs-desc">Description</label><input id="cs-desc" type="text" style="width:100%" value="${esc(c.info.description || "")}"></div></div>
     <datalist id="zones3">${ZONES.map((z) => `<option value="${z}">`).join("")}</datalist>
     <h3 style="margin-top:14px">Analysis settings</h3>
-    <div class="mapgrid" style="grid-template-columns: 260px 160px 1fr">${Object.keys(st.params_default).map((k) => {
+    <div class="mapgrid" style="grid-template-columns: 260px 160px 1fr">${Object.keys(st.params_default).filter((k) => !Array.isArray(st.params_default[k])).map((k) => {
       const dv = st.params_default[k];
       const input = typeof dv === "boolean" ? `<select data-param="${k}"><option value="true" ${p[k] ? "selected" : ""}>yes</option><option value="false" ${!p[k] ? "selected" : ""}>no</option></select>`
         : `<input type="text" size="10" data-param="${k}" value="${esc(p[k])}">`;
@@ -862,5 +862,177 @@ async function viewMap(v) {
     <div style="margin-bottom:8px">${names}</div>${mapSvg(d, 1100, 640)}
     <div class="small muted" style="margin-top:6px">${d.sites.length} cell site${d.sites.length === 1 ? "" : "s"} used; ${st.located.toLocaleString()} of ${st.records.toLocaleString()} telecom records located. Hover a point for its time, cell, return and citation.</div>`;
 }
+
+/* ------------------------------------------------------------------ links (contact chains) */
+const LK = { slug: null, sel: [], extra: "", hops: null, slack: 0, devices: false, res: null, focus: null };
+async function viewLinks(v) {
+  const ch = await api(`/api/case/${enc(S.slug)}/links`);
+  if (!ch.telecom) { v.innerHTML = `<div class="empty">No telecom records in this case. Links work on call-detail records and tower dumps.</div>`; return; }
+  if (LK.slug !== S.slug) Object.assign(LK, { slug: S.slug, sel: [], extra: "", hops: ch.max_hops || 6, slack: 0, devices: false, res: null, focus: null });
+  const box = (id, label, sub) => `<label class="lkopt"><input type="checkbox" data-lk="${esc(id)}" ${LK.sel.includes(id) ? "checked" : ""}> <span class="mono">${esc(label)}</span> <span class="small muted">${esc(sub)}</span></label>`;
+  v.innerHTML = `<div class="lkgrid"><div class="panel lkside">
+      <h3>Link these</h3>
+      <div class="small muted" style="margin-bottom:6px">Pick two or more. Every pair is searched.</div>
+      <div class="lkhead small">Targets (their records are in the case)</div>
+      ${ch.targets.map((t) => box(t.id, t.id, `${fmt(t.contacts)} contacts`)).join("")}
+      ${ch.dumps.length ? `<div class="lkhead small">Tower dumps</div>` + ch.dumps.map((d) => box(d.id, d.label, `${fmt(d.phones)} phones`)).join("") : ""}
+      <div class="field" style="margin-top:8px"><label for="lk-extra">Other numbers (any format, comma separated)</label><input id="lk-extra" type="text" value="${esc(LK.extra)}" placeholder="e.g. 571-555-0160"></div>
+      <div class="row" style="gap:10px;margin-top:6px">
+        <div class="field"><label for="lk-hops">Longest chain</label><select id="lk-hops">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => `<option ${n === LK.hops ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+        <div class="field"><label for="lk-slack">Also longer by</label><select id="lk-slack">${[0, 1, 2].map((n) => `<option ${n === LK.slack ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+      </div>
+      <label class="lkopt"><input type="checkbox" id="lk-dev" ${LK.devices ? "checked" : ""}> same handset (IMEI) counts as a link</label>
+      <div class="row" style="margin-top:10px"><button class="btn go" data-act="lk-run">Find chains</button></div>
+      <div class="lkhead small" style="margin-top:14px">Saved groups (reported on every run)</div>
+      ${(ch.sets || []).map((g, i) => `<div class="small lkset"><a href="#" data-lkload="${i}">${esc(g.name)}</a> <span class="muted">${esc(g.members.length)} members</span> <a href="#" class="muted" data-lkdel="${esc(g.name)}">delete</a></div>`).join("") || `<div class="small muted">None yet.</div>`}
+      <div class="row" style="margin-top:6px"><input id="lk-name" type="text" size="14" placeholder="group name"><button class="btn small" data-act="lk-save">Save selection</button></div>
+      <p class="small muted" style="margin-top:12px">A hop is a call or text between two numbers in the records. Short codes and numbers in contact with more than ${esc(ch.hub_max)} others are not used as links; a tower dump is only an endpoint. A chain shows contact, not that anything passed along it.</p>
+    </div><div id="lk-out">${LK.res ? "" : `<div class="empty">Choose numbers on the left and press <b>Find chains</b>.</div>`}</div></div>`;
+  v._ch = ch;
+  if (LK.res) drawLinks();
+}
+function lkSeeds() {
+  const extra = ($("#lk-extra") ? $("#lk-extra").value : LK.extra).split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean);
+  return [...LK.sel, ...extra];
+}
+async function lkRun() {
+  LK.extra = $("#lk-extra").value; LK.hops = +$("#lk-hops").value; LK.slack = +$("#lk-slack").value; LK.devices = $("#lk-dev").checked;
+  const seeds = lkSeeds();
+  if (seeds.length < 2) { toast("Choose at least two.", true); return; }
+  $("#lk-out").innerHTML = `<p class="muted">Searching…</p>`;
+  try {
+    LK.res = await api(`/api/case/${enc(S.slug)}/links`, { body: { seeds, max_hops: LK.hops, slack: LK.slack, devices: LK.devices } });
+    LK.focus = null;
+    drawLinks();
+  } catch (e) { $("#lk-out").innerHTML = `<div class="alertbox">${esc(e.message)}</div>`; }
+}
+function lkLayout(r, W, H) {
+  const pos = {}, seeds = r.seeds, n = seeds.length, cx = W / 2, cy = H / 2 - 20, R = Math.min(W, H - 60) * 0.42;
+  seeds.forEach((s, i) => { const a = -Math.PI / 2 + (2 * Math.PI * i) / n; pos[s] = [cx + R * Math.cos(a), cy + R * Math.sin(a)]; });
+  if (n === 2) { pos[seeds[0]] = [W * 0.1, cy - 20]; pos[seeds[1]] = [W * 0.9, cy - 20]; }
+  // start every other node on the straight line between the ends of the first chain it is on, at its place along it
+  const placed = new Set(seeds);
+  r.pairs.forEach((pr) => pr.paths.forEach((p, k) => p.forEach((id, i) => {
+    if (placed.has(id)) return;
+    const A = pos[pr.a], B = pos[pr.b], t = i / (p.length - 1), off = ((k % 5) - 2) * 26;
+    const dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1;
+    pos[id] = [A[0] + dx * t - (dy / L) * off, A[1] + dy * t + (dx / L) * off]; placed.add(id);
+  })));
+  r.nodes.forEach((nd, i) => { if (!pos[nd.id]) pos[nd.id] = [cx + 30 * Math.cos(i), cy + 30 * Math.sin(i)]; });
+  // a few rounds of spring layout (deterministic: no random numbers), chosen numbers stay put
+  const ids = r.nodes.map((x) => x.id), k = Math.sqrt((W * H) / Math.max(4, ids.length)) * 0.55;
+  for (let it = 0; it < 220; it++) {
+    const d = {}; ids.forEach((a) => (d[a] = [0, 0]));
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+      const a = ids[i], b = ids[j], dx = pos[a][0] - pos[b][0], dy = pos[a][1] - pos[b][1], dist = Math.max(8, Math.hypot(dx, dy)), f = (k * k) / dist;
+      d[a][0] += (dx / dist) * f; d[a][1] += (dy / dist) * f; d[b][0] -= (dx / dist) * f; d[b][1] -= (dy / dist) * f;
+    }
+    r.edges.forEach((e) => {
+      const dx = pos[e.a][0] - pos[e.b][0], dy = pos[e.a][1] - pos[e.b][1], dist = Math.max(8, Math.hypot(dx, dy)), f = (dist * dist) / k;
+      d[e.a][0] -= (dx / dist) * f; d[e.a][1] -= (dy / dist) * f; d[e.b][0] += (dx / dist) * f; d[e.b][1] += (dy / dist) * f;
+    });
+    const temp = 40 * (1 - it / 220) + 1;
+    ids.forEach((a) => {
+      if (seeds.includes(a)) return;
+      const L = Math.hypot(d[a][0], d[a][1]) || 1;
+      pos[a][0] = Math.min(W - 40, Math.max(40, pos[a][0] + (d[a][0] / L) * Math.min(L, temp)));
+      pos[a][1] = Math.min(H - 64, Math.max(30, pos[a][1] + (d[a][1] / L) * Math.min(L, temp)));
+    });
+  }
+  return pos;
+}
+function lkSvg(r, W, H) {
+  const pos = lkLayout(r, W, H), nd = Object.fromEntries(r.nodes.map((x) => [x.id, x]));
+  const on = new Set(), onE = new Set();
+  if (LK.focus) r.pairs.forEach((pr) => pr.paths.forEach((p) => { if (p.includes(LK.focus)) { p.forEach((x) => on.add(x)); p.slice(1).forEach((x, i) => onE.add([p[i], x].sort().join("|"))); } }));
+  const dim = (yes) => (LK.focus && !yes ? ' opacity=".18"' : "");
+  const o = [`<svg id="lk-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Contact chains" style="background:#fff;border:1px solid var(--rule);border-radius:6px;font-family:system-ui,sans-serif">`];
+  r.edges.forEach((e) => {
+    const [x1, y1] = pos[e.a], [x2, y2] = pos[e.b], w = 1 + Math.min(5, Math.log2(e.records)), key = [e.a, e.b].sort().join("|");
+    const dash = e.via.includes("cdr") ? "" : ' stroke-dasharray="5 4"';
+    o.push(`<g${dim(onE.has(key))}><line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#6b7a73" stroke-width="${w}"${dash}><title>${esc(`${e.a} - ${e.b}: ${e.records} record(s) (${e.calls} calls, ${e.texts} texts) ${e.first_utc || ""} to ${e.last_utc || ""} UTC; ${e.returns.join(", ")}; ${e.first_cite || ""}${e.last_cite && e.last_cite !== e.first_cite ? " .. " + e.last_cite : ""}`)}</title></line>`
+      + `<text x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 4}" font-size="13" text-anchor="middle" fill="#405048" paint-order="stroke" stroke="#fff" stroke-width="3">${e.records}</text></g>`);
+  });
+  r.nodes.forEach((n) => {
+    const [x, y] = pos[n.id], lab = n.kind === "dump" ? n.label : n.id;
+    let shape;
+    if (n.kind === "dump") shape = `<rect x="${x - 11}" y="${y - 11}" width="22" height="22" fill="#8a8f8c" stroke="#333"/>`;
+    else if (n.kind === "handset") shape = `<path d="M${x},${y - 11} l11,11 l-11,11 l-11,-11 z" fill="#cdb46a" stroke="#333"/>`;
+    else shape = `<circle cx="${x}" cy="${y}" r="${n.chosen ? 12 : n.returned ? 9 : 6}" fill="${n.chosen ? "#2f6b55" : n.returned ? "#24343a" : "#fff"}" stroke="${n.chosen ? "#c0392b" : "#24343a"}" stroke-width="${n.chosen ? 3 : 1.5}"/>`;
+    o.push(`<g class="lknode" data-lknode="${esc(n.id)}" style="cursor:pointer"${dim(on.has(n.id))}>${shape}<title>${esc(`${n.label} - ${n.kind}${n.returned ? " (records returned)" : ""}, ${n.degree} different contacts`)}</title>`
+      + `<text x="${x}" y="${y + (n.chosen ? 28 : 21)}" font-size="${n.chosen ? 16 : 13}" font-weight="${n.chosen ? 700 : 400}" text-anchor="middle" fill="#1d2a26" paint-order="stroke" stroke="#fff" stroke-width="3">${esc(lab.length > 34 ? lab.slice(0, 33) + "…" : lab)}</text></g>`);
+  });
+  o.push(`<g font-size="13" fill="#405048"><text x="12" y="${H - 14}">● chosen  ● number with records returned  ○ contact  ■ tower dump${r.edges.some((e) => e.via.includes("handset")) ? "  ◆ handset" : ""} · line number = records · dashed = seen only in a dump / handset · click a number to show its chains</text></g></svg>`);
+  return o.join("");
+}
+function drawLinks() {
+  const r = LK.res, out = $("#lk-out");
+  if (!out) return;
+  const E = {}; r.edges.forEach((e) => (E[[e.a, e.b].sort().join("|")] = e));
+  const hop = (a, b) => E[[a, b].sort().join("|")];
+  const lab = (id) => { const n = r.nodes.find((x) => x.id === id); return n ? n.label : id; };
+  const pairRows = r.pairs.map((pr) => `<tr><td class="mono">${esc(lab(pr.a))}</td><td class="mono">${esc(lab(pr.b))}</td><td>${pr.hops == null ? `<span class="muted">not linked within ${r.max_hops}</span>` : pr.hops}</td><td>${pr.paths.length}${pr.more ? "+" : ""}</td></tr>`).join("");
+  const keep = (p) => !LK.focus || p.includes(LK.focus);
+  const chains = r.pairs.filter((pr) => pr.paths.some(keep)).map((pr) => `<h4 class="mono" style="margin:14px 0 4px">${esc(lab(pr.a))} ↔ ${esc(lab(pr.b))}: ${pr.hops} hop${pr.hops === 1 ? "" : "s"}${pr.more ? " (first " + pr.paths.length + " chains)" : ""}</h4>`
+    + pr.paths.filter(keep).map((p) => `<div class="lkchain">${p.map((id, i) => {
+      const node = `<a href="#" class="mono" data-lkfocus="${esc(id)}">${esc(lab(id))}</a>`;
+      if (!i) return node;
+      const e = hop(p[i - 1], id);
+      return ` <span class="lkhop">—${e.records}${e.returns.length ? " · " + esc(e.returns.join(",")) : ""} <code class="cite" data-cite="${esc(e.first_cite)}">${esc(e.first_cite)}</code>${e.last_cite && e.last_cite !== e.first_cite ? ` <code class="cite" data-cite="${esc(e.last_cite)}">${esc(e.last_cite)}</code>` : ""}—</span> ${node}`;
+    }).join("")}</div>`).join("")).join("");
+  const thr = r.through.slice(0, 15).map((t) => `<tr><td class="mono"><a href="#" data-lkfocus="${esc(t.node)}">${esc(lab(t.node))}</a></td><td>${t.pairs.length}</td><td>${t.paths}</td></tr>`).join("");
+  out.innerHTML = `${r.missing && r.missing.length ? `<div class="alertbox">Not in the records: ${esc(r.missing.join(", "))}</div>` : ""}
+    <div class="row" style="margin-bottom:6px"><span class="small muted">${LK.focus ? `Showing chains through <b>${esc(lab(LK.focus))}</b> - <a href="#" data-lkfocus="">show all</a>` : "Click a number to show only its chains."}</span>
+      <span style="flex:1"></span><button class="btn small" data-act="lk-svg">Download picture (SVG)</button><button class="btn small" data-act="lk-csv">Download chains (CSV)</button></div>
+    ${r.edges.length ? lkSvg(r, 1100, Math.max(520, 140 + 26 * r.nodes.length > 760 ? 760 : 140 + 26 * r.nodes.length)) : ""}
+    <div class="lkcols"><div class="panel"><h3>Pairs</h3><table class="t"><tr><th>from</th><th>to</th><th>hops</th><th>chains</th></tr>${pairRows}</table></div>
+    ${thr ? `<div class="panel"><h3>Numbers on the most chains</h3><table class="t"><tr><th>number</th><th>pairs linked</th><th>chains</th></tr>${thr}</table></div>` : ""}</div>
+    <div class="panel"><h3>Chains, hop by hop</h3><div class="small muted">Each hop: records between the two numbers · returns · first and last record (click to open it).</div>${chains || `<p class="muted">No chain within ${r.max_hops} hops.</p>`}</div>
+    ${r.left_out.length ? `<div class="small muted" style="margin-top:8px">Not used as links: ${esc(r.left_out.slice(0, 20).map((x) => `${x.node} (${x.reason})`).join("; "))}</div>` : ""}`;
+}
+function lkCsv() {
+  const r = LK.res, E = {}; r.edges.forEach((e) => (E[[e.a, e.b].sort().join("|")] = e));
+  const L = [["from_end", "to_end", "pair_hops", "chain", "hop", "number_a", "number_b", "records", "calls", "texts", "first_utc", "last_utc", "returns", "first_cite", "last_cite"]];
+  r.pairs.forEach((pr) => pr.paths.forEach((p, k) => p.slice(1).forEach((b, i) => {
+    const e = E[[p[i], b].sort().join("|")];
+    L.push([pr.a, pr.b, pr.hops, k + 1, i + 1, p[i], b, e.records, e.calls, e.texts, e.first_utc, e.last_utc, e.returns.join(" "), e.first_cite, e.last_cite]);
+  })));
+  return L.map((row) => row.map((x) => { const s = x == null ? "" : String(x); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",")).join("\n") + "\n";
+}
+function lkDownload(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+document.addEventListener("change", (e) => {
+  const c = e.target.closest("input[data-lk]");
+  if (!c) return;
+  const id = c.dataset.lk;
+  LK.sel = c.checked ? [...LK.sel.filter((x) => x !== id), id] : LK.sel.filter((x) => x !== id);
+});
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-act^='lk-'], [data-lkfocus], [data-lknode], [data-lkload], [data-lkdel]");
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.lkfocus !== undefined || t.dataset.lknode !== undefined) { const id = t.dataset.lkfocus ?? t.dataset.lknode; LK.focus = id && LK.focus !== id ? id : null; drawLinks(); return; }
+  if (t.dataset.lkload !== undefined) {
+    const g = ($("#view")._ch || {}).sets[+t.dataset.lkload];
+    const known = new Set([...(($("#view")._ch || {}).targets || []).map((x) => x.id), ...(($("#view")._ch || {}).dumps || []).map((x) => x.id)]);
+    LK.sel = g.members.filter((m) => known.has(m)); LK.extra = g.members.filter((m) => !known.has(m)).join(", ");
+    LK.hops = g.max_hops || LK.hops; LK.slack = g.slack || 0; LK.res = null;
+    await viewLinks($("#view")); lkRun(); return;
+  }
+  if (t.dataset.lkdel !== undefined) { await api(`/api/case/${enc(S.slug)}/links/save`, { body: { name: t.dataset.lkdel, delete: true } }); toast("Group deleted."); viewLinks($("#view")); return; }
+  const act = t.dataset.act;
+  if (act === "lk-run") lkRun();
+  else if (act === "lk-svg") lkDownload("contact-chains.svg", $("#lk-svg").outerHTML, "image/svg+xml");
+  else if (act === "lk-csv") lkDownload("contact-chains.csv", lkCsv(), "text/csv");
+  else if (act === "lk-save") {
+    const name = $("#lk-name").value.trim(), members = lkSeeds();
+    if (!name) { toast("Give the group a name.", true); return; }
+    try { await api(`/api/case/${enc(S.slug)}/links/save`, { body: { name, members, max_hops: +$("#lk-hops").value, slack: +$("#lk-slack").value } }); toast("Saved - it will be in the report after the next run."); viewLinks($("#view")); }
+    catch (err) { toast(err.message, true); }
+  }
+});
 
 route();

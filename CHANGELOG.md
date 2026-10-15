@@ -2,6 +2,20 @@
 
 ## 1.1.0 — in development
 
+- **Contact chains ("degrees of separation") for telecom returns.** A new **Links** screen: tick two or
+  more targets and/or tower dumps (or type any numbers), choose the longest chain (1-10 hops), and Spoor
+  finds every shortest chain of calls/texts linking each pair, drawn as a web (chosen numbers on the
+  outside, the numbers between them inside; click one to see only its chains) and listed hop by hop with
+  the record count, returns and first/last citation of each hop. Short codes (611...) and contact numbers
+  with more than `tel_hub_max` (25) different neighbours are not used as links, and a tower dump is only an
+  endpoint; what was left out is listed. Optional: the same handset (IMEI) as a link. Download the picture
+  (SVG) or the chains (CSV); save the selection as a named group and it is reported with citations on
+  every run. Automatic findings: targets with no direct or shared contact that are linked through a longer
+  chain, tower-dump phones linked to a target through a contact, and a contact-distance table of all
+  targets; pairs not linked go to Appendix A. CLI: `spoor links CASE NUMBER NUMBER [dump:S08] [--save NAME]`.
+  Fictional test returns in `demo/links` (generator `tests/make_links_demo.py`).
+- Common contacts no longer count short codes (e.g. 611) as a contact in common.
+
 - **Analysis report (REPORT.md rewritten).** Bottom line first: a BLUF of what the records show, then the
   figures, then a short narrative by theme (account access, linked accounts, items in several returns,
   shared identifiers, calls and cell sites, watchlist, timing), the returns analysed, and numbered

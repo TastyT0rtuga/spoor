@@ -153,6 +153,18 @@ def null_results(case, con, p: dict) -> list[dict]:
             add(TL, "Shared handsets or SIMs", "No IMEI or IMSI was used by more than one target number.",
                 "SELECT imei, COUNT(DISTINCT target) FROM ccore WHERE imei IS NOT NULL GROUP BY imei HAVING COUNT(DISTINCT target) >= 2",
                 ("telecom_shared_imei", "telecom_shared_imsi"))
+            import json as _j
+            dg = dbm.rows(con, "SELECT facts FROM findings WHERE kind='telecom_degrees' AND fid IS NOT NULL")
+            if dg:
+                v = (_j.loads(dg[0]["facts"]) or {})
+                rows = [r for r in (v.get("tables") or [{}])[0].get("rows", []) if not isinstance(r[2], int)]
+                if rows:
+                    vv = v.get("values", {})
+                    out.append({"area": TL, "title": "Targets not linked by any chain of contacts",
+                                "statement": f"{len(rows)} pair{'s' if len(rows) != 1 else ''} of targets {'are' if len(rows) != 1 else 'is'} not linked within "
+                                             f"{vv.get('max_hops')} hops of calls or texts (short codes and numbers with more than {vv.get('hub_max')} contacts not used as links): "
+                                             + ", ".join(f"{r[0]} and {r[1]}" for r in rows[:30]) + ".",
+                                "sql": "-- breadth-first search over the contact pairs in: SELECT target, other FROM calls WHERE COALESCE(dir,'') != 'fwd'; see METHODS.md, Contact chains"})
             if _n(con, "SELECT COUNT(*) FROM tcore WHERE lat IS NOT NULL"):
                 add(TL, "Co-location", f"No two targets used the same or neighbouring cell sites within {int(p.get('tel_coloc_window_min', 15))} minutes of each other.",
                     "SELECT cite, ts_utc, target, cell, lat, lon FROM ccore WHERE lat IS NOT NULL ORDER BY ts_utc", ("telecom_colocation",))

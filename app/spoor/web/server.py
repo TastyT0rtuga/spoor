@@ -568,8 +568,74 @@ def api_reports(h, q, body, slug):
 def api_map(h, q, body, slug):
     from ..mapdata import map_data
     c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        return map_data(con, c.params)
+    finally:
+        con.close()
+
+
+@route("GET", r"/api/case/([^/]+)/links")
+def api_links_choices(h, q, body, slug):
+    from ..contactgraph import Graph
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        if not (dbm.one(con, "SELECT COUNT(*) FROM tel") or 0):
+            return {"telecom": False}
+        g = Graph(con, c.params, dumps=True)
+        return {"telecom": True, **g.choices(), "sets": c.params.get("tel_link_sets") or [], "max_hops": c.params.get("tel_path_max_hops", 6)}
+    finally:
+        con.close()
+
+
+@route("POST", r"/api/case/([^/]+)/links")
+def api_links(h, q, body, slug):
+    """{seeds: [number | dump:... | imei:...], max_hops, slack, devices} -> chains between every pair, with citations."""
+    from ..contactgraph import Graph
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        g = Graph(con, c.params, dumps=True, devices=bool(body.get("devices")))
+        asked = [str(x) for x in (body.get("seeds") or [])][:40]
+        seeds, missing = [], []
+        for x in asked:
+            n = g.find(x)
+            (seeds.append(n) if n else missing.append(x))
+        seeds = list(dict.fromkeys(seeds))
+        if len(seeds) < 2:
+            raise ApiError("Choose at least two numbers or tower dumps that are in the records." + (f" Not found: {', '.join(missing)}." if missing else ""), 400)
+        hops = max(1, min(10, int(body.get("max_hops") or 6)))
+        slack = max(0, min(2, int(body.get("slack") or 0)))
+        res = g.result_json(g.connect(seeds, hops, slack, int(body.get("max_paths") or 25)))
+        res["missing"] = missing
+        res["hub_max"] = g.hub_max
+        return res
+    finally:
+        con.close()
+
+
+@route("POST", r"/api/case/([^/]+)/links/save")
+def api_links_save(h, q, body, slug):
+    """Save (or with delete=true, remove) a named link group; it is reported on the next run."""
+    c = _case(slug)
+    name = str(body.get("name") or "").strip()[:80]
+    if not name:
+        raise ApiError("Give the group a name.", 400)
+    cur = dict(c.info.get("params") or {})
+    sets = [s for s in (cur.get("tel_link_sets") or []) if s.get("name") != name]
+    if not body.get("delete"):
+        members = [str(m) for m in (body.get("members") or [])][:40]
+        if len(members) < 2:
+            raise ApiError("A link group needs at least two members.", 400)
+        sets.append({"name": name, "members": members, "max_hops": int(body.get("max_hops") or 6), "slack": int(body.get("slack") or 0)})
+    cur["tel_link_sets"] = sets
+    c.info["params"] = cur
+    c.save()
     con = c.db()
-    return map_data(con, c.params)
+    c.audit(con, "link_group_" + ("deleted" if body.get("delete") else "saved"), {"name": name, "members": body.get("members")})
+    con.close()
+    return {"ok": True, "sets": sets}
 
 
 @route("GET", r"/api/case/([^/]+)/report")

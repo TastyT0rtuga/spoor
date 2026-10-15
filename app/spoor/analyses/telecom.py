@@ -45,6 +45,8 @@ class Telecom(Analysis):
         self.colocation()
         self.msg("tower dumps")
         self.dumps()
+        self.msg("contact chains")
+        self.paths()
         self.msg("telecom exports and KML")
         self.exports()
 
@@ -250,13 +252,14 @@ class Telecom(Analysis):
         by: dict = collections.defaultdict(list)
         for r in rows:
             by[r["other"]].append(r)
-        commons = [(o, rs) for o, rs in by.items() if len(rs) >= mint and o not in self.tset]
+        from ..contactgraph import digits
+        commons = [(o, rs) for o, rs in by.items() if len(rs) >= mint and o not in self.tset and digits(o) >= 7]   # not 611, *86 ...
         commons.sort(key=lambda kv: (-len(kv[1]), -sum(r["n"] for r in kv[1]), kv[0]))
         self.common_rows = commons
         # overlap matrix across ALL targets (any number of returns at once)
         contacts = {t: set() for t in self.targets}
         for o, rs in by.items():
-            if o in self.tset:
+            if o in self.tset or digits(o) < 7:
                 continue
             for r in rs:
                 contacts[r["target"]].add(o)
@@ -540,6 +543,118 @@ class Telecom(Analysis):
                                      "scenes": sorted(scs), "records": len(rs)}},
                          sql=f"SELECT cite, ts_utc, target, other, src_kind, source FROM calls WHERE target={sq(ph)} OR other={sq(ph)} ORDER BY ts_utc",
                          evidence=ev, priority=1, sort_key=f"7{ph}")
+
+    # ------------------------------------------------------------ contact chains ("degrees of separation")
+    def _chain_facts(self, g, res, cites):
+        from ..contactgraph import node_label
+        tables, ev, chains = [], [], []
+        for pr in res["pairs"]:
+            for i, p in enumerate(pr["paths"][: self.nsamp]):
+                hops = []
+                for x, y in zip(p, p[1:]):
+                    e = g.edges[g._k(x, y)]
+                    hops.append([node_label(x), node_label(y), e["n"], e["first"], e["last"], ", ".join(sorted(e["returns"])),
+                                 cites.get(e["first_id"]), cites.get(e["last_id"])])
+                    if i == 0:
+                        ev.append((e["first_id"], f"{node_label(x)} - {node_label(y)}"))
+                chains.append({"a": pr["a"], "b": pr["b"], "chain": [node_label(n) for n in p]})
+                tables.append({"title": f"{node_label(pr['a'])} to {node_label(pr['b'])}, chain {i + 1}: " + " - ".join(node_label(n) for n in p),
+                               "columns": ["from", "to", "records", "first_utc", "last_utc", "returns", "first_cite", "last_cite"], "rows": hops})
+        return tables, list(dict.fromkeys(ev)), chains
+
+    def paths(self):
+        from ..contactgraph import Graph, node_label
+        maxh = int(self.p.get("tel_path_max_hops", 6))
+        sets = [s for s in (self.p.get("tel_link_sets") or []) if isinstance(s, dict) and len(s.get("members") or []) >= 2]
+        if len(self.targets) < 2 and not sets and not self.one("SELECT COUNT(*) FROM tel WHERE src_kind='dump'"):
+            return
+        g = Graph(self.con, self.p, dumps=True, devices=False)
+        sql_edges = ("SELECT cite, ts_utc, target, other, kind, ret, src_kind FROM calls WHERE COALESCE(dir,'') != 'fwd' "
+                     "AND target IS NOT NULL AND other IS NOT NULL ORDER BY ts_utc")
+        # every pair of targets: how many hops apart
+        if len(self.targets) >= 2:
+            res = g.connect(self.targets, maxh, 0, 10)
+            matrix = []
+            for pr in res["pairs"]:
+                matrix.append([pr["a"], pr["b"], pr["hops"] if pr["hops"] is not None else f"not within {maxh}", len(pr["paths"]),
+                               " - ".join(pr["paths"][0]) if pr["paths"] else ""])
+            linked = [pr for pr in res["pairs"] if pr["hops"] is not None]
+            stmt = (f"{plural(len(res['pairs']), 'pair')} of the {len(self.targets)} target numbers: in direct contact "
+                    f"{sum(1 for p in linked if p['hops'] == 1)}; with a contact in common {sum(1 for p in linked if p['hops'] == 2)}; "
+                    f"linked only through a longer chain of contacts {sum(1 for p in linked if p['hops'] >= 3)}; "
+                    f"not linked within {maxh} hops {len(res['pairs']) - len(linked)}.")
+            if res["left_out"]:
+                stmt += (f" Not used as links: {', '.join(x['node'] for x in res['left_out'][:6] if not x['node'].startswith('dump:'))}"
+                         f"{' ...' if len(res['left_out']) > 6 else ''} (short codes and numbers in contact with more than {g.hub_max} others).")
+            self.add("telecom_degrees", f"Contact distance between {len(self.targets)} targets", stmt,
+                     {"values": {"targets": self.targets, "pairs": len(res["pairs"]), "max_hops": maxh, "hub_max": g.hub_max,
+                                 "direct": sum(1 for p in linked if p["hops"] == 1), "shared_contact": sum(1 for p in linked if p["hops"] == 2),
+                                 "longer": sum(1 for p in linked if p["hops"] >= 3), "not_linked": len(res["pairs"]) - len(linked),
+                                 "left_out": [x["node"] for x in res["left_out"] if not x["node"].startswith("dump:")][:40]},
+                      "tables": [{"title": "Pairs of targets", "columns": ["target A", "target B", "hops", "shortest chains", "first chain"], "rows": matrix}]},
+                     sql=sql_edges, priority=2, sort_key="1z")
+            far = sorted((pr for pr in linked if pr["hops"] >= 3), key=lambda pr: (pr["hops"], pr["a"], pr["b"]))
+            for pr in far[: self.max]:
+                one = {"pairs": [pr], **{k: res[k] for k in ("seeds", "max_hops", "slack")}}
+                ids = [x for p in pr["paths"] for u, v in zip(p, p[1:]) for x in (g.edges[g._k(u, v)]["first_id"], g.edges[g._k(u, v)]["last_id"])]
+                cites = g.cites(ids)
+                tables, ev, chains = self._chain_facts(g, one, cites)
+                mids = sorted({n for p in pr["paths"] for n in p[1:-1]})
+                first = pr["paths"][0]
+                stmt = (f"Targets {pr['a']} and {pr['b']} have no direct contact and no contact in common in these records; they are linked "
+                        f"in {pr['hops']} hops: " + " - ".join(first)
+                        + (f" ({plural(len(pr['paths']), 'chain')} of that length{', more not listed' if pr['more'] else ''}; numbers on them: {', '.join(mids)})"
+                           if len(pr["paths"]) > 1 else "")
+                        + ". Each hop is a call or text between the two numbers in the records cited; the chain does not show that "
+                          "anything passed from one end to the other.")
+                self.add("telecom_path", f"{pr['a']} to {pr['b']}: {pr['hops']} hops", stmt,
+                         {"values": {"a": pr["a"], "b": pr["b"], "hops": pr["hops"], "chains": len(pr["paths"]), "more": pr["more"],
+                                     "chain": first, "through": mids, "returns": ", ".join(sorted({r for p in pr["paths"] for u, v in zip(p, p[1:])
+                                                                                                    for r in g.edges[g._k(u, v)]["returns"]}))},
+                          "tables": tables}, sql=sql_edges, evidence=ev, priority=1, sort_key=f"1y{pr['hops']:02d}{pr['a']}{pr['b']}")
+        # tower dumps: phones on a dump linked to a target through someone else (dump - phone - contact - ... - target)
+        for dn, d in sorted(g.dumps.items()):
+            for t in self.targets:
+                res = g.connect([dn, t], min(maxh, 5), 0, 10)
+                pr = res["pairs"][0]
+                if pr["hops"] is None or pr["hops"] < 3:     # 1: the target is on the dump; 2: a dump phone is its contact (other findings)
+                    continue
+                ids = [x for p in pr["paths"] for u, v in zip(p, p[1:]) for x in (g.edges[g._k(u, v)]["first_id"], g.edges[g._k(u, v)]["last_id"])]
+                cites = g.cites(ids)
+                tables, ev, chains = self._chain_facts(g, res, cites)
+                phones = sorted({p[1] for p in pr["paths"]})
+                stmt = (f"{plural(len(phones), 'phone')} on tower dump {d['label']} ({', '.join(phones[:6])}) "
+                        f"{'is' if len(phones) == 1 else 'are'} linked to target {t} in {pr['hops'] - 1} contact hops: "
+                        + " - ".join(node_label(n) for n in pr["paths"][0][1:]) + ".")
+                self.add("telecom_dump_path", f"Tower dump {d['label']} to {t}: {pr['hops'] - 1} hops", stmt,
+                         {"values": {"dump": d["label"], "target": t, "hops": pr["hops"] - 1, "phones": phones, "chains": len(pr["paths"]),
+                                     "chain": [node_label(n) for n in pr["paths"][0]]}, "tables": tables},
+                         sql=sql_edges, evidence=ev, priority=1, sort_key=f"7y{t}{dn}")
+        # saved groups (Links screen / spoor links --save)
+        for k, s in enumerate(sets, 1):
+            members = [m for m in (g.find(x) for x in s["members"]) if m]
+            missing = [x for x in s["members"] if not g.find(x)]
+            name = s.get("name") or f"group {k}"
+            if len(members) < 2:
+                self.add("telecom_link_set", f"Link group '{name}': not enough numbers found",
+                         f"Saved link group '{name}' names {', '.join(s['members'])}; {len(members)} of them {'is' if len(members) == 1 else 'are'} in the records, so there is nothing to link.",
+                         {"values": {"name": name, "members": s["members"], "missing": missing}}, sql=sql_edges, priority=2, sort_key=f"1x{k:03d}")
+                continue
+            hops = int(s.get("max_hops") or maxh)
+            res = g.connect(members, hops, int(s.get("slack") or 0), 10)
+            ids = [x for pr in res["pairs"] for p in pr["paths"] for u, v in zip(p, p[1:]) for x in (g.edges[g._k(u, v)]["first_id"], g.edges[g._k(u, v)]["last_id"])]
+            cites = g.cites(ids)
+            tables, ev, chains = self._chain_facts(g, res, cites)
+            parts = [f"{node_label(pr['a'])} and {node_label(pr['b'])}: " + (f"{pr['hops']} hop{'s' if pr['hops'] != 1 else ''}" if pr["hops"] else f"not linked within {hops}")
+                     for pr in res["pairs"]]
+            through = sorted(res["through"].items(), key=lambda kv: (-len(kv[1]["pairs"]), -kv[1]["paths"], kv[0]))
+            stmt = (f"Link group '{name}' ({', '.join(node_label(m) for m in members)}): " + "; ".join(parts) + "."
+                    + (f" Numbers on the most chains: " + ", ".join(f"{node_label(n)} ({plural(len(v['pairs']), 'pair')})" for n, v in through[:5]) + "." if through else "")
+                    + (f" Not in the records: {', '.join(missing)}." if missing else ""))
+            self.add("telecom_link_set", f"Link group '{name}'", stmt,
+                     {"values": {"name": name, "members": members, "missing": missing, "max_hops": hops,
+                                 "pairs": [[node_label(pr["a"]), node_label(pr["b"]), pr["hops"]] for pr in res["pairs"]], "through": [node_label(n) for n, _v in through[:20]]},
+                      "tables": tables[:40]}, sql=sql_edges, evidence=ev[:60], priority=1, sort_key=f"1x{k:03d}")
 
     # ------------------------------------------------------------ CSV exports
     def exports(self):
