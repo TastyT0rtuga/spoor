@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 import string
 import threading
 import time
@@ -815,17 +816,42 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
+class _Server(ThreadingHTTPServer):
+    """On Windows SO_REUSEADDR lets a second program bind a port that is already listening, so two Spoor windows (or
+    an old and a new version) could share 8765 and the browser would reach the wrong one ('This link is from an
+    earlier session'). Ask for the port exclusively instead."""
+    allow_reuse_address = not IS_WINDOWS
+
+    def server_bind(self):
+        if IS_WINDOWS and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _port_in_use(p: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", p), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
 def serve(port: int | None = None, open_browser: bool = True) -> None:
     global PORT
     s = load_settings()
     PORT = int(port or s.get("port") or 8765)
     srv = None
+    busy = []
     for p in range(PORT, PORT + 20):
+        if _port_in_use(p):          # another Spoor (any version) or another program is already answering there
+            busy.append(p)
+            continue
         try:
-            srv = ThreadingHTTPServer(("127.0.0.1", p), Handler)
+            srv = _Server(("127.0.0.1", p), Handler)
             PORT = p
             break
         except OSError:
+            busy.append(p)
             continue
     if srv is None:
         raise SystemExit("No free port between %d and %d" % (PORT, PORT + 19))
@@ -835,6 +861,9 @@ def serve(port: int | None = None, open_browser: bool = True) -> None:
     print(f"\n{bar}\n  Spoor {__version__} - offline subpoena-return analysis\n{bar}")
     print(f"  Dashboard:  {url}")
     print(f"  Cases:      {s['cases_dir']}")
+    if busy:
+        print(f"  Port {busy[0]} is already in use (another Spoor window, possibly an older version?) - this one is on {PORT}.")
+        print("  Use the link above; links printed by other windows belong to those windows.")
     print("  Keep this window open while you use the dashboard. Closing it does NOT")
     print("  stop analyses that are running - they continue in the background.")
     print(f"{bar}\n")
