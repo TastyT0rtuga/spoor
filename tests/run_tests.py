@@ -666,9 +666,27 @@ def links_tests():
     g2 = Graph(con, dict(c.params, tel_hub_max=2))
     r2 = g2.connect([T1, T6], 6)
     ok(r2["pairs"][0]["hops"] is None and any(x["node"] == X2 for x in r2["left_out"]), "contacts with more neighbours than tel_hub_max are not links, and are listed")
+    # review fixes: toll-free numbers, stepping-stone strength, time order, baseline (#1 F-07, #2 G-F4, #3 SR-07)
+    ok(g.blocked_reason("+18005551212") == "toll-free number" and g.blocked_reason("+18885550100") == "toll-free number",
+       "toll-free numbers are never stepping stones")
+    ok(len(pr["ordered"]) == len(pr["paths"]), "every chain says whether it can be read in time order")
+    st = r["through"][X2]
+    ok({"records", "returns", "weak", "returned"} <= set(st) and st["returned"] is False and st["records"] >= 2,
+       f"stepping stones carry their record and return counts ({st})")
+    bl = r["baseline"]
+    ok(bl["pairs"] == len(g.targets[:30]) * (len(g.targets[:30]) - 1) // 2 and set(bl["linked_within"]) == set(range(1, 7)),
+       f"every result carries the baseline over target pairs ({bl})")
+    g3 = Graph(con, c.params)
+    e1, e2 = g3.edges[g3._k(T1, X1)], g3.edges[g3._k(X1, T3)]
+    e1["times"], e2["times"] = [2000.0], [1000.0]
+    ok(g3.time_ordered([T1, X1, T3]) is False and g3.time_ordered([T3, X1, T1]) is True, "time order: a later hop needs a record no earlier than the hop before")
+    r3o = g3.connect([T1, T3], 6, ordered_only=True)
+    ok(all(g3.time_ordered(p) for p in r3o["pairs"][0]["paths"]) and X1 not in sum(r3o["pairs"][0]["paths"], []),
+       "time-ordered mode drops chains that cannot be read in time order")
     def facts(kind):
         return [_json.loads(f)["values"] for (f,) in con.execute("SELECT facts FROM findings WHERE kind=? AND fid IS NOT NULL ORDER BY fid", (kind,))]
     tp = facts("telecom_path")
+    ok(tp and "baseline_linked_within" in tp[0] and "time_ordered_chains" in tp[0], "the chain finding states time order and the baseline")
     ok(len(tp) == 1 and tp[0]["hops"] == 4 and tp[0]["chains"] == 2, "finding: the two targets linked only through a 4-hop chain")
     ev = con.execute("SELECT COUNT(*) FROM finding_evidence fe JOIN findings f ON f.id=fe.finding_id WHERE f.kind='telecom_path'").fetchone()[0]
     ok(ev == 4, f"the chain finding cites one record per hop ({ev})")

@@ -606,7 +606,7 @@ class Telecom(Analysis):
                     f"not linked within {maxh} hops {len(res['pairs']) - len(linked)}.")
             if res["left_out"]:
                 stmt += (f" Not used as links: {', '.join(x['node'] for x in res['left_out'][:6] if not x['node'].startswith('dump:'))}"
-                         f"{' ...' if len(res['left_out']) > 6 else ''} (short codes and numbers in contact with more than {g.hub_max} others).")
+                         f"{' ...' if len(res['left_out']) > 6 else ''} (short codes, toll-free numbers and numbers in contact with more than {g.hub_max} others).")
             self.add("telecom_degrees", f"Contact distance between {len(self.targets)} targets", stmt,
                      {"values": {"targets": self.targets, "pairs": len(res["pairs"]), "max_hops": maxh, "hub_max": g.hub_max,
                                  "direct": sum(1 for p in linked if p["hops"] == 1), "shared_contact": sum(1 for p in linked if p["hops"] == 2),
@@ -622,14 +622,26 @@ class Telecom(Analysis):
                 tables, ev, chains = self._chain_facts(g, one, cites)
                 mids = sorted({n for p in pr["paths"] for n in p[1:-1]})
                 first = pr["paths"][0]
+                stones = {n: g.stone(n, pr["paths"]) for n in mids}
+                weak = [n for n, st in stones.items() if st["weak"] and not st["returned"]]
+                base = res["baseline"]
+                n_within = base["linked_within"].get(pr["hops"], 0)
+                ordered = sum(1 for o in pr["ordered"] if o)
                 stmt = (f"Targets {pr['a']} and {pr['b']} have no direct contact and no contact in common in these records; they are linked "
                         f"in {pr['hops']} hops: " + " - ".join(first)
                         + (f" ({plural(len(pr['paths']), 'chain')} of that length{', more not listed' if pr['more'] else ''}; numbers on them: {', '.join(mids)})"
                            if len(pr["paths"]) > 1 else "")
                         + ". Each hop is a call or text between the two numbers in the records cited; the chain does not show that "
-                          "anything passed from one end to the other.")
+                          "anything passed from one end to the other."
+                        + (f" Time order: the chain {'can' if ordered else 'cannot'} be read in time order (each hop has a record no "
+                           f"earlier than the hop before)." if len(pr["paths"]) == 1 else
+                           f" Time order: {ordered} of {len(pr['paths'])} chains can be read in time order.")
+                        + (f" Weak stepping stones (one record on each hop, records not returned): {', '.join(weak)}." if weak else "")
+                        + f" For comparison, {n_within} of the {base['pairs']} pairs of target numbers are linked within {pr['hops']} hops.")
                 self.add("telecom_path", f"{pr['a']} to {pr['b']}: {pr['hops']} hops", stmt,
                          {"values": {"a": pr["a"], "b": pr["b"], "hops": pr["hops"], "chains": len(pr["paths"]), "more": pr["more"],
+                                     "time_ordered_chains": ordered, "weak_stones": weak, "baseline_pairs": base["pairs"],
+                                     "baseline_linked_within": n_within,
                                      "chain": first, "through": mids, "returns": ", ".join(sorted({r for p in pr["paths"] for u, v in zip(p, p[1:])
                                                                                                     for r in g.edges[g._k(u, v)]["returns"]}))},
                           "tables": tables}, sql=sql_edges, evidence=ev, priority=1, sort_key=f"1y{pr['hops']:02d}{pr['a']}{pr['b']}")

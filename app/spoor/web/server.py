@@ -610,7 +610,7 @@ def api_links(h, q, body, slug):
             raise ApiError("Choose at least two numbers or tower dumps that are in the records." + (f" Not found: {', '.join(missing)}." if missing else ""), 400)
         hops = max(1, min(10, int(body.get("max_hops") or 6)))
         slack = max(0, min(2, int(body.get("slack") or 0)))
-        res = g.result_json(g.connect(seeds, hops, slack, int(body.get("max_paths") or 25)))
+        res = g.result_json(g.connect(seeds, hops, slack, int(body.get("max_paths") or 25), ordered_only=bool(body.get("ordered_only"))))
         res["missing"] = missing
         res["hub_max"] = g.hub_max
         return res

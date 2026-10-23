@@ -866,11 +866,11 @@ async function viewMap(v) {
 }
 
 /* ------------------------------------------------------------------ links (contact chains) */
-const LK = { slug: null, sel: [], extra: "", hops: null, slack: 0, devices: false, res: null, focus: null };
+const LK = { slug: null, sel: [], extra: "", hops: null, slack: 0, devices: false, ordered: false, res: null, focus: null };
 async function viewLinks(v) {
   const ch = await api(`/api/case/${enc(S.slug)}/links`);
   if (!ch.telecom) { v.innerHTML = `<div class="empty">No telecom records in this case. Links work on call-detail records and tower dumps.</div>`; return; }
-  if (LK.slug !== S.slug) Object.assign(LK, { slug: S.slug, sel: [], extra: "", hops: ch.max_hops || 6, slack: 0, devices: false, res: null, focus: null });
+  if (LK.slug !== S.slug) Object.assign(LK, { slug: S.slug, sel: [], extra: "", hops: ch.max_hops || 6, slack: 0, devices: false, ordered: false, res: null, focus: null });
   const box = (id, label, sub) => `<label class="lkopt"><input type="checkbox" data-lk="${esc(id)}" ${LK.sel.includes(id) ? "checked" : ""}> <span class="mono">${esc(label)}</span> <span class="small muted">${esc(sub)}</span></label>`;
   v.innerHTML = `<div class="lkgrid"><div class="panel lkside">
       <h3>Link these</h3>
@@ -884,6 +884,7 @@ async function viewLinks(v) {
         <div class="field"><label for="lk-slack">Also longer by</label><select id="lk-slack">${[0, 1, 2].map((n) => `<option ${n === LK.slack ? "selected" : ""}>${n}</option>`).join("")}</select></div>
       </div>
       <label class="lkopt"><input type="checkbox" id="lk-dev" ${LK.devices ? "checked" : ""}> same handset (IMEI) counts as a link</label>
+      <label class="lkopt" title="Keep only chains whose hops can be read in time order: each hop has a record no earlier than the hop before it."><input type="checkbox" id="lk-ord" ${LK.ordered ? "checked" : ""}> time-ordered chains only</label>
       <div class="row" style="margin-top:10px"><button class="btn go" data-act="lk-run">Find chains</button></div>
       <div class="lkhead small" style="margin-top:14px">Saved groups (reported on every run)</div>
       ${(ch.sets || []).map((g, i) => `<div class="small lkset"><a href="#" data-lkload="${i}">${esc(g.name)}</a> <span class="muted">${esc(g.members.length)} members</span> <a href="#" class="muted" data-lkdel="${esc(g.name)}">delete</a></div>`).join("") || `<div class="small muted">None yet.</div>`}
@@ -898,12 +899,12 @@ function lkSeeds() {
   return [...LK.sel, ...extra];
 }
 async function lkRun() {
-  LK.extra = $("#lk-extra").value; LK.hops = +$("#lk-hops").value; LK.slack = +$("#lk-slack").value; LK.devices = $("#lk-dev").checked;
+  LK.extra = $("#lk-extra").value; LK.hops = +$("#lk-hops").value; LK.slack = +$("#lk-slack").value; LK.devices = $("#lk-dev").checked; LK.ordered = $("#lk-ord").checked;
   const seeds = lkSeeds();
   if (seeds.length < 2) { toast("Choose at least two.", true); return; }
   $("#lk-out").innerHTML = `<p class="muted">Searching…</p>`;
   try {
-    LK.res = await api(`/api/case/${enc(S.slug)}/links`, { body: { seeds, max_hops: LK.hops, slack: LK.slack, devices: LK.devices } });
+    LK.res = await api(`/api/case/${enc(S.slug)}/links`, { body: { seeds, max_hops: LK.hops, slack: LK.slack, devices: LK.devices, ordered_only: LK.ordered } });
     LK.focus = null;
     drawLinks();
   } catch (e) { $("#lk-out").innerHTML = `<div class="alertbox">${esc(e.message)}</div>`; }
@@ -973,31 +974,35 @@ function drawLinks() {
   const E = {}; r.edges.forEach((e) => (E[[e.a, e.b].sort().join("|")] = e));
   const hop = (a, b) => E[[a, b].sort().join("|")];
   const lab = (id) => { const n = r.nodes.find((x) => x.id === id); return n ? n.label : id; };
-  const pairRows = r.pairs.map((pr) => `<tr><td class="mono">${esc(lab(pr.a))}</td><td class="mono">${esc(lab(pr.b))}</td><td>${pr.hops == null ? `<span class="muted">not linked within ${r.max_hops}</span>` : pr.hops}</td><td>${pr.paths.length}${pr.more ? "+" : ""}</td></tr>`).join("");
+  const pairRows = r.pairs.map((pr) => `<tr><td class="mono">${esc(lab(pr.a))}</td><td class="mono">${esc(lab(pr.b))}</td><td>${pr.hops == null ? `<span class="muted">${pr.hops_any_order ? `no time-ordered chain (${pr.hops_any_order} hops in any order)` : `not linked within ${r.max_hops}`}</span>` : pr.hops}</td><td>${pr.paths.length}${pr.more ? "+" : ""}</td></tr>`).join("");
+  const bl = r.baseline || {}, blw = bl.linked_within || {};
+  const hopsSeen = [...new Set(r.pairs.filter((pr) => pr.hops != null).map((pr) => pr.hops))].sort((a, b) => a - b);
+  const baseTxt = bl.pairs ? `Baseline: of the ${bl.pairs} pairs of target numbers in this case, ${hopsSeen.map((h) => `${blw[h] || 0} are linked within ${h} hop${h === 1 ? "" : "s"}`).join(", ") || "none are linked"}. When most pairs are linked at a given length, a chain of that length says little on its own.` : "";
   const keep = (p) => !LK.focus || p.includes(LK.focus);
   const chains = r.pairs.filter((pr) => pr.paths.some(keep)).map((pr) => `<h4 class="mono" style="margin:14px 0 4px">${esc(lab(pr.a))} ↔ ${esc(lab(pr.b))}: ${pr.hops} hop${pr.hops === 1 ? "" : "s"}${pr.more ? " (first " + pr.paths.length + " chains)" : ""}</h4>`
-    + pr.paths.filter(keep).map((p) => `<div class="lkchain">${p.map((id, i) => {
+    + pr.paths.map((p, k) => [p, (pr.ordered || [])[k]]).filter(([p]) => keep(p)).map(([p, ord]) => `<div class="lkchain"><span class="small ${ord ? "muted" : ""}" title="Can the hops be read in time order (each hop has a record no earlier than the hop before)?">${ord ? "in time order" : "<b>not in time order</b>"}</span> · ${p.map((id, i) => {
       const node = `<a href="#" class="mono" data-lkfocus="${esc(id)}">${esc(lab(id))}</a>`;
       if (!i) return node;
       const e = hop(p[i - 1], id);
       return ` <span class="lkhop">—${e.records}${e.returns.length ? " · " + esc(e.returns.join(",")) : ""} <code class="cite" data-cite="${esc(e.first_cite)}">${esc(e.first_cite)}</code>${e.last_cite && e.last_cite !== e.first_cite ? ` <code class="cite" data-cite="${esc(e.last_cite)}">${esc(e.last_cite)}</code>` : ""}—</span> ${node}`;
     }).join("")}</div>`).join("")).join("");
-  const thr = r.through.slice(0, 15).map((t) => `<tr><td class="mono"><a href="#" data-lkfocus="${esc(t.node)}">${esc(lab(t.node))}</a></td><td>${t.pairs.length}</td><td>${t.paths}</td></tr>`).join("");
+  const thr = r.through.slice(0, 15).map((t) => `<tr><td class="mono"><a href="#" data-lkfocus="${esc(t.node)}">${esc(lab(t.node))}</a></td><td>${t.pairs.length}</td><td>${t.paths}</td><td>${fmt(t.records)}</td><td>${esc((t.returns || []).join(", "))}</td><td>${t.returned ? "records returned" : t.weak ? '<b style="color:var(--flag)">weak - one record per hop</b>' : ""}</td></tr>`).join("");
   out.innerHTML = `${r.missing && r.missing.length ? `<div class="alertbox">Not in the records: ${esc(r.missing.join(", "))}</div>` : ""}
     <div class="row" style="margin-bottom:6px"><span class="small muted">${LK.focus ? `Showing chains through <b>${esc(lab(LK.focus))}</b> - <a href="#" data-lkfocus="">show all</a>` : "Click a number to show only its chains."}</span>
       <span style="flex:1"></span><button class="btn small" data-act="lk-svg">Download picture (SVG)</button><button class="btn small" data-act="lk-csv">Download chains (CSV)</button></div>
     ${r.edges.length ? lkSvg(r, 1100, Math.max(520, 140 + 26 * r.nodes.length > 760 ? 760 : 140 + 26 * r.nodes.length)) : ""}
     <div class="lkcols"><div class="panel"><h3>Pairs</h3><table class="t"><tr><th>from</th><th>to</th><th>hops</th><th>chains</th></tr>${pairRows}</table></div>
-    ${thr ? `<div class="panel"><h3>Numbers on the most chains</h3><table class="t"><tr><th>number</th><th>pairs linked</th><th>chains</th></tr>${thr}</table></div>` : ""}</div>
+    ${thr ? `<div class="panel"><h3>Numbers on the most chains</h3><table class="t"><tr><th>number</th><th>pairs linked</th><th>chains</th><th>records</th><th>returns</th><th></th></tr>${thr}</table><div class="small muted">A number whose records were not returned is only seen next to returned numbers, so a bank, clinic or ride-share line can look like a link. Check weak stones first.</div></div>` : ""}</div>
+    ${baseTxt ? `<div class="small muted" style="margin:6px 0">${esc(baseTxt)}</div>` : ""}
     <div class="panel"><h3>Chains, hop by hop</h3><div class="small muted">Each hop: records between the two numbers · returns · first and last record (click to open it).</div>${chains || `<p class="muted">No chain within ${r.max_hops} hops.</p>`}</div>
     ${r.left_out.length ? `<div class="small muted" style="margin-top:8px">Not used as links: ${esc(r.left_out.slice(0, 20).map((x) => `${x.node} (${x.reason})`).join("; "))}</div>` : ""}`;
 }
 function lkCsv() {
   const r = LK.res, E = {}; r.edges.forEach((e) => (E[[e.a, e.b].sort().join("|")] = e));
-  const L = [["from_end", "to_end", "pair_hops", "chain", "hop", "number_a", "number_b", "records", "calls", "texts", "first_utc", "last_utc", "returns", "first_cite", "last_cite"]];
+  const L = [["from_end", "to_end", "pair_hops", "chain", "hop", "number_a", "number_b", "records", "calls", "texts", "first_utc", "last_utc", "returns", "first_cite", "last_cite", "chain_in_time_order"]];
   r.pairs.forEach((pr) => pr.paths.forEach((p, k) => p.slice(1).forEach((b, i) => {
     const e = E[[p[i], b].sort().join("|")];
-    L.push([pr.a, pr.b, pr.hops, k + 1, i + 1, p[i], b, e.records, e.calls, e.texts, e.first_utc, e.last_utc, e.returns.join(" "), e.first_cite, e.last_cite]);
+    L.push([pr.a, pr.b, pr.hops, k + 1, i + 1, p[i], b, e.records, e.calls, e.texts, e.first_utc, e.last_utc, e.returns.join(" "), e.first_cite, e.last_cite, (pr.ordered || [])[k] ? "yes" : "no"]);
   })));
   return L.map((row) => row.map((x) => { const s = x == null ? "" : String(x); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",")).join("\n") + "\n";
 }
