@@ -7,6 +7,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -87,6 +88,812 @@ def unit_markdown():
     ok('data-cite="S03:L12"' in h, "citations become clickable in the viewer")
 
 
+def _figure_case(root: Path, name: str, folder: Path, tz: str = "America/New_York", params=None, interrupt=None,
+                 case_params=None):
+    """Create a case in its own folder and run it (optionally interrupted once, then resumed)."""
+    root.mkdir(parents=True, exist_ok=True)
+    os.environ["SPOOR_CASES"] = str(root / "cases")
+    os.environ["SPOOR_SETTINGS"] = str(root / "settings.json")
+    (root / "settings.json").write_text(json.dumps({"llm": {"enabled": False, "url": "http://127.0.0.1:9"}}))
+    from spoor.case import create_case, register_path
+    from spoor.jobs import start_job
+    c = create_case(name, "t", "", tz)
+    if case_params:
+        c.info["params"] = dict(c.info.get("params") or {}, **case_params)
+        c.save()
+    con = c.db()
+    register_path(c, con, str(folder))
+    restore = None
+    if interrupt:
+        restore = interrupt()
+    start_job(c, con, "run", dict({"llm": False}, **(params or {})), wait=True)
+    if restore:
+        restore()
+        st = con.execute("SELECT status FROM jobs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        ok(st == "cancelled", f"{name}: run interrupted as planned ({st})")
+        start_job(c, con, "run", dict({"llm": False}, **(params or {})), wait=True)
+    st = con.execute("SELECT status FROM jobs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    ok(st == "done", f"{name}: run finished ({st})")
+    return c, c.db()
+
+
+def _cancel_once(module, attr):
+    """Make module.attr raise Cancelled the first time it is called (a crash or cancel at that point)."""
+    import importlib
+    mod = importlib.import_module(module)
+    orig = getattr(mod, attr)
+    state = {"done": False}
+    from spoor.jobs import Cancelled
+
+    def wrapper(*a, **k):
+        if not state["done"]:
+            state["done"] = True
+            raise Cancelled()
+        return orig(*a, **k)
+
+    def install():
+        setattr(mod, attr, wrapper)
+        return lambda: setattr(mod, attr, orig)
+    return install
+
+
+def figures_tests():
+    import hashlib
+    from spoor.figures import figure_rows
+    from spoor.figures.svg import check_svg, svg_texts
+    from spoor.jobs import draw_figures
+    from spoor.selftest import demo_returns_dir
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-fig-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        def hashes(c):
+            return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((c.report_dir / "figures").glob("*.svg"))}
+
+        a, con = _figure_case(tmp / "a", "Figure test", demo_returns_dir())
+        gl = grammar_lint(a.report_dir)
+        ok(not gl, f"demo case reports: number agreement ({gl[:5]})")
+        figs = figure_rows(con)
+        ha = hashes(a)
+        ok([f["status"] for f in figs] == ["ok", "ok"] and len(ha) == 2, f"demo: both figures drawn ({sorted(ha)})")
+        for name in sorted(ha):
+            svg = (a.report_dir / "figures" / name).read_text(encoding="utf-8")
+            probs = check_svg(svg)
+            ok(not probs, f"{name}: grid, safety and layout checks pass" + (f" - {probs[:3]}" if probs else ""))
+            ok("@font-face" in svg and "font/woff2;base64," in svg, f"{name}: fonts embedded, nothing loaded from outside")
+        # determinism and resume
+        draw_figures(a, con)
+        ok(hashes(a) == ha, "redrawing from the same findings gives byte-identical SVG")
+        b, _ = _figure_case(tmp / "b", "Figure test", demo_returns_dir(), interrupt=_cancel_once("spoor.figures.timeline", "build"))
+        ok(hashes(b) == ha, "a run interrupted while drawing figures, then resumed, gives identical figures")
+        c3, _ = _figure_case(tmp / "c", "Figure test", demo_returns_dir(), interrupt=_cancel_once("spoor.derive", "build_indexes"))
+        ok(hashes(c3) == ha, "a run interrupted after reading the files, then resumed, gives identical figures")
+        # coverage: every finding on a figure exists; every figure has a sources table
+        fids = {r[0] for r in con.execute("SELECT fid FROM findings WHERE fid IS NOT NULL")}
+        refs = [r for f in figs for r in f["refs"]]
+        ok(refs and all(r["fid"] in fids for r in refs), f"every finding ID on a figure exists in FINDINGS ({len(refs)} references)")
+        texts = " ".join(t for name in ha for t in svg_texts((a.report_dir / "figures" / name).read_text(encoding="utf-8")))
+        shown = set(re.findall(r"\bF\d{3,}\b", texts))
+        ok(shown and shown <= fids, f"every finding ID printed on a figure exists ({len(shown)} shown)")
+        fm = (a.report_dir / "FIGURES.md").read_text(encoding="utf-8")
+        ok(fm.count("**Figure sources**") == 2 and "## Figure 1" in fm and "## Figure 2" in fm, "FIGURES.md has a sources table per figure")
+        rep = (a.report_dir / "REPORT.md").read_text(encoding="utf-8")
+        ok("figures/FIG01-timeline.svg" in rep and "figures/FIG02-links.svg" in rep, "REPORT.md embeds both figures")
+        man = (a.report_dir / "MANIFEST.sha256").read_text(encoding="utf-8")
+        ok(all(ha[n] + "  figures/" + n in man for n in ha), "MANIFEST.sha256 covers the figures")
+        ok("Every finding referenced by a figure passed the re-read check" in (a.report_dir / "CITATION_CHECK.md").read_text(encoding="utf-8"),
+           "CITATION_CHECK.md confirms the findings shown in figures")
+        rv = (a.report_dir / "REVIEW.md").read_text(encoding="utf-8")
+        ok("- [ ] Figure 1 (" in rv and "- [ ] Figure 2 (" in rv, "REVIEW.md has a tick-box per figure")
+        ok("## Figures" in (a.report_dir / "METHODS.md").read_text(encoding="utf-8"), "METHODS.md describes the figures")
+        # the queries in FIGURES.md return exactly what is drawn
+        tl = figs[0]
+        got: dict = {}
+        for acc, b_, n in con.execute(tl["data_sql"][0][1]):
+            got.setdefault("(no account)" if acc is None else acc, {})[b_] = n
+        ok(got == tl["meta"]["bins"], "timeline: the data query returns exactly the bars drawn")
+        lk = figs[1]
+        for (what, sql), pnl in zip(lk["data_sql"], lk["meta"]["panels"]):
+            rows = sorted([r[0], r[1], r[2]] for r in con.execute(sql))
+            ok(rows == pnl["edges"], f"link chart {what}: the data query returns exactly the lines drawn")
+        # the checker catches what it should
+        good = (a.report_dir / "figures" / "FIG02-links.svg").read_text(encoding="utf-8")
+        for bad, what in ((good.replace("</svg>", "<script>alert(1)</script></svg>"), "a script"),
+                          (good.replace("<rect ", '<rect onclick="x()" ', 1), "an event handler"),
+                          (good.replace("</svg>", '<a href="http://example.com"><text x="0" y="0">x</text></a></svg>'), "an external link"),
+                          (re.sub(r'<rect x="(\d+)"', lambda m: f'<rect x="{int(m.group(1)) + 2}"', good, count=3), "off-grid coordinates"),
+                          (good.replace("</svg>", '<text x="24" y="36" font-family="' + "'Atkinson Next', 'Segoe UI', 'DejaVu Sans', Arial, sans-serif"
+                                        + '" font-size="20" font-weight="700" fill="#000">Overlapping title</text></svg>'), "overlapping text")):
+            ok(check_svg(bad), f"layout checker flags {what}")
+        # stress: long and Cyrillic names, 260 shared IPs, many bursts, a long silence; and a one-day return
+        sys.path.insert(0, str(ROOT / "tests"))
+        import make_stress_data
+        make_stress_data.main(str(tmp / "stress"))
+        s1, con1 = _figure_case(tmp / "s1", "Stress", tmp / "stress" / "long")
+        s2, con2 = _figure_case(tmp / "s2", "One day", tmp / "stress" / "short", tz="Europe/Moscow")
+        for cc, cn, label in ((s1, con1, "stress"), (s2, con2, "one-day")):
+            fr = figure_rows(cn)
+            ok([f["status"] for f in fr] == ["ok", "ok"], f"{label}: both figures drawn")
+            for f in [f for f in fr if f.get("file")]:
+                svg = (cc.report_dir / "figures" / f["file"]).read_text(encoding="utf-8")
+                probs = check_svg(svg)
+                ok(not probs, f"{label} {f['file']}: no text outside its box or the canvas, no overlaps" + (f" - {probs[:3]}" if probs else ""))
+        fr1 = figure_rows(con1)
+        ok(any(n.startswith("Showing 12 of 30 accounts") for n in fr1[0]["notes"]), "stress: the timeline prints its account cap")
+        ok(any("showing 12 of 30 accounts and 16 of" in n for n in fr1[1]["notes"]), "stress: the link chart prints its caps")
+        txt = " ".join(svg_texts((s1.report_dir / "figures" / fr1[0]["file"]).read_text(encoding="utf-8")))
+        ok("Showing 12 of 30 accounts" in txt and "\u2026" in txt, "stress: caps and shortened labels are printed on the figure")
+        ok(len(fr1[0]["meta"]["segments"]) == 2, "stress: the six-month silence is cut from the axis")
+        u = figure_rows(con2)[0]["meta"]["unit"]
+        ok(u in ("minute", "5 minutes", "15 minutes", "hour", "3 hours", "6 hours"), f"one-day: bins finer than a day ({u})")
+        # switched off
+        d, cond = _figure_case(tmp / "d", "No figures", demo_returns_dir(), params={"figures": False})
+        ok(not (d.report_dir / "figures").exists() or not list((d.report_dir / "figures").glob("*.svg")), "--no-figures: no figures drawn")
+        ok("switched off" in (d.report_dir / "REVIEW.md").read_text(encoding="utf-8"), "--no-figures: REVIEW.md says so")
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def unit_telecom():
+    from spoor.mapping import propose_mapping
+    from spoor.telecom import km, norm_cell, norm_dir, norm_kind, norm_number, parse_duration
+    ok(norm_number("(703) 555-0101") == "+17035550101" and norm_number("17035550101") == "+17035550101"
+       and norm_number("72345") == "72345" and norm_number("+44 20 7946 0958") == "+442079460958" and norm_number("000") is None,
+       "numbers normalised (NANP to E.164, short codes and foreign numbers kept)")
+    ok(norm_cell("NL-1021-02") == norm_cell("nl 1021 2") == "NL-1021-2" and norm_cell("N/A") is None, "cell IDs compared without case, separators or leading zeros")
+    ok(parse_duration("00:06:46") == 406 and parse_duration("6:46") == 406 and parse_duration("95") == 95
+       and parse_duration("2.5", "Duration (min)") == 150 and parse_duration("12 sec") == 12, "durations read (HH:MM:SS, MM:SS, seconds, minutes header)")
+    ok(norm_dir("Outgoing", "") == "out" and norm_dir("", "MTC") == "in" and norm_dir("", "SMS-MO") == "out" and norm_dir("", "Voice") == ""
+       and norm_dir("MF", "") == "fwd" and norm_dir("M0", "") == "out", "direction from direction column or call type (MF forwarded, M0 typo)")
+    ok(norm_kind("SMS-MT") == "sms" and norm_kind("MOC") == "voice" and norm_kind("GPRS") == "data" and norm_kind("Text") == "sms"
+       and norm_kind("SMSC") == "sms" and norm_kind("RCS-IMCHAT") == "rcs" and norm_kind("mSTerminatingSMSinMSC") == "sms"
+       and norm_kind("AUDIO CALL") == "voice" and norm_kind("NULL") == "", "call / text / chat / data kinds")
+    from spoor.telecom import parse_eci, parse_cell_location, norm_imei
+    ok(parse_eci("12344578")[0] == 12344578 and parse_eci("311480-0c82216")[0] == 51234 * 256 + 22
+       and parse_eci("311580-123456-1")[0] == 123456 * 256 + 1 and parse_eci("310260-0012345-005")[0] == 12345 * 256 + 5
+       and parse_eci("310260012344578")[0] == 12344578 and parse_eci("12344578:12344579")[0] == 12344578
+       and parse_eci("N/A")[0] is None, "cell identity: decimal, hex ECGI, MCC-MNC-eNB-cell, 15-digit ECGI, first:last")
+    cl = parse_cell_location("[12344578:48221:-77.30020:38.80010:110:-1.0:200;12344579:48221:-77.3:38.8:230:-1.0:200]")
+    ok(cl["eci"] == 12344578 and cl["lat"] == 38.8001 and cl["lon"] == -77.3002 and cl["azimuth"] == 110 and cl["cells_listed"] == 2
+       and "lat" not in parse_cell_location("[000000020:0:0.0:0.0:-1:-1.0:]"), "AT&T CellLocation: longitude first, 0,0 = unknown")
+    ok(norm_imei("350000000012340")[0] == norm_imei("3500000000123401")[0] == "35000000001234" and norm_imei("3.50000E+14") == (None, "sci"),
+       "IMEIs compared on 14 digits; scientific notation rejected")
+    ok(abs(km(38.7521, -77.4739, 38.75228, -77.47371) * 1000 - 26) < 3, "site distance (haversine)")
+    m, _ = propose_mapping(["Name", "Cell", "Email"], {"Cell": ["(703) 555-0142"], "Name": ["J"], "Email": ["a@b.com"]})
+    ok("cell" not in m, "a 'Cell' column holding phone numbers is not read as a cell site")
+    m, _ = propose_mapping(["Date", "Called Number", "Duration"], {"Date": ["2024-04-01 10:00"], "Called Number": ["7035550101"], "Duration": ["12"]})
+    ok(m.get("counterparty") == "Called Number" and "term" not in m, "a lone called-number column is the other party")
+    m, _ = propose_mapping(["Cell ID", "Latitude", "Longitude", "Azimuth"],
+                           {"Cell ID": ["123"], "Latitude": ["38.1"], "Longitude": ["-77.2"], "Azimuth": ["120"]})
+    ok(m.get("cell") == "Cell ID" and m.get("lat") == "Latitude" and m.get("lon") == "Longitude" and m.get("azimuth") == "Azimuth",
+       "tower-list columns recognised")
+
+
+def telecom_isolation():
+    """Returns that are not telecom returns are read exactly as before telecom support existed."""
+    from spoor.mapping import categorize, default_account_from, propose_mapping
+    m, _ = propose_mapping(["Timestamp (UTC)", "User", "IP Address", "Event", "IMEI", "Session Duration", "Latitude", "Longitude"],
+                           {"Timestamp (UTC)": ["2024-04-01 10:00:00"], "User": ["a@b.com"], "IP Address": ["203.0.113.5"],
+                            "Event": ["Login"], "IMEI": ["353911104143632"], "Session Duration": ["00:12:00"],
+                            "Latitude": ["38.75"], "Longitude": ["-77.47"]})
+    ok(m.get("device") == "IMEI" and not any(k in m for k in ("imei", "duration", "lat", "lon")),
+       "a login log with IMEI, duration and coordinate columns is not read as telecom (IMEI stays the device)")
+    ok(default_account_from([("L2", "Account Number: 12345678")])[0] is None, "'Account Number:' in a bank preamble is not a default account")
+    ok(categorize("Sent text", "", None) == "transaction" and categorize("Sent text", "", None, telecom=True) == "communication",
+       "call-record wording only applies to telecom tables")
+    from spoor.readers.delimited import scan as _scan
+    from spoor.selftest import demo_returns_dir
+    split = [p.name for p in demo_returns_dir().rglob("*") if p.suffix in (".csv", ".txt", ".log", ".tsv")
+             and len(_scan(p, p.name)["tables"]) != 1]
+    ok(not split, "ordinary single-table files are never split into several tables" + (f": {split}" if split else ""))
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-iso-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        _c, con = _figure_case(tmp, "Isolation", demo_returns_dir())
+        n_tel = con.execute("SELECT COUNT(*) FROM tel").fetchone()[0]
+        n_f = con.execute("SELECT COUNT(*) FROM findings WHERE module='telecom'").fetchone()[0]
+        n_fig = con.execute("SELECT COUNT(*) FROM figures WHERE slug='contacts'").fetchone()[0]
+        ok(n_tel == 0 and n_f == 0 and n_fig == 0 and not (_c.exports_dir / "telecom.kml").exists(),
+           "the non-telecom demo produces no telecom records, findings, figure or KML")
+        rows = {r[0]: r[1] for r in con.execute("SELECT display, rows FROM sources")}
+        st = [v for k, v in rows.items() if k.endswith("statement_transactions.csv")]
+        ok(st == [6], f"the bank statement keeps all 6 rows ({st})")
+    finally:
+        for k, v_ in old_env.items():
+            if v_ is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v_
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def carrier_layout_tests():
+    """Carrier layouts (fictional values): every quirk the format readers handle, one case per layout."""
+    import json as _json
+    sys.path.insert(0, str(ROOT / "tests"))
+    import make_carrier_layouts as mcl
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-cl-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        mcl._USED.clear()
+        mcl.R.seed(20240521)
+        mcl.main(str(tmp / "gen"))
+        bundled = ROOT / "demo" / "carrier_layouts"
+        same = all((tmp / "gen" / p.relative_to(bundled)).read_bytes() == p.read_bytes()
+                   for p in bundled.rglob("*") if p.is_file() and p.suffix in (".csv", ".txt"))
+        ok(same, "carrier-layout generator reproduces the bundled text/CSV demo files")
+        cases = {}
+        for name in ("mediation", "volte", "report", "hda", "dumps"):
+            shutil.copytree(bundled / name, tmp / "in" / name)
+        for f in (bundled / "location").iterdir():
+            shutil.copy(f, tmp / "in" / "mediation" / f.name)
+        for name in ("mediation", "volte", "report", "hda", "dumps"):
+            c, con = _figure_case(tmp / name, f"Layout {name}", tmp / "in" / name, params={"figures": False})
+            cases[name] = (c, con)
+
+        def q(name, sql, args=()):
+            return cases[name][1].execute(sql, args).fetchall()
+
+        def facts(name, kind):
+            return [_json.loads(f)["values"] for (f,) in q(name, "SELECT facts FROM findings WHERE kind=? ORDER BY fid", (kind,))]
+
+        E = mcl.EXPECT
+        # mediation spreadsheet: target only in the file name; eNodeB + sector -> ECI -> tower list; texts carry no cell
+        tq = facts("mediation", "telecom_quality")[0]
+        ok(E["mediation_target"] in tq["targets"] and list(tq["filename_targets"].values())[0]["target"] == E["mediation_target"],
+           "mediation layout: target taken from the file name (and listed for review)")
+        n_eci = q("mediation", "SELECT COUNT(*) FROM tel WHERE loc_basis LIKE 'tower list in the same folder (by ECI)%'")[0][0]
+        ok(n_eci > 0, f"mediation layout: voice records without coordinates located by eNodeB + sector -> ECI ({n_eci})")
+        tl = tuple(q("mediation", "SELECT COUNT(*), SUM(ts_utc IS NOT NULL) FROM events e JOIN sources s ON s.id=e.source_id "
+                                  "WHERE s.display LIKE '%Tower_List%'")[0])
+        ok(tl[0] == 24 and not tl[1], "a tower list's ListDate column is not read as event times")
+        ok(not q("mediation", "SELECT 1 FROM tel WHERE target=?", (E["ta_imsi"],)) and
+           q("mediation", "SELECT COUNT(*) FROM tel WHERE src_kind='ta' AND target=?", (E["mediation_target"],))[0][0] == 30,
+           "timing-advance report named by IMSI filed under the number whose CDR shows that IMSI")
+        ok(q("mediation", "SELECT COUNT(*) FROM tel WHERE src_kind='ping' AND target=? AND dev_lat IS NOT NULL AND lat IS NULL",
+             (E["mediation_target"],))[0][0] == 12, "pings read as device location estimates, not cell sites")
+        prof = facts("mediation", "telecom_target")[0]
+        ok(prof["data_sessions"] == 0 and prof["timing_advance_estimates"] == 30 and prof["ping_estimates"] == 12,
+           "location estimates are not counted as data usage in the target profile")
+        # VoLTE: local and GMT times, MF legs, Cell Face + eNB -> hex ECGI
+        m = _json.loads(q("volte", "SELECT config FROM sources WHERE display LIKE '%VoLTE%'")[0][0])["tables"][0]["mapping"]
+        ok(m.get("ts") == "Record Open Dt/Tm(GMT)" and m.get("orig") == "CPN" and m.get("term") == "Called #",
+           "VoLTE layout: the GMT column is the time; CPN / Called # are the two parties")
+        ok(tuple(q("volte", "SELECT COUNT(*), SUM(lat IS NOT NULL) FROM tel")[0]) == (35, 35), "VoLTE layout: every record located via hex ECGI")
+        ok(q("volte", "SELECT COUNT(*) FROM tel WHERE dir='fwd'")[0][0] == 5 and facts("volte", "telecom_target")[0]["records"] == 30,
+           "VoLTE layout: forwarded (MF) legs kept but not counted")
+        ok(not q("volte", "SELECT 1 FROM tel WHERE other = target"), "VoLTE layout: the other party is never the target itself")
+        # report text: two tables, CellLocation longitude-first, damaged IMEI
+        sc = _json.loads(q("report", "SELECT config FROM sources")[0][0])
+        ok([t["name"] for t in sc["tables"]] == ["Voice Usage For: (703)555-0133", "Data Usage For: (703)555-0133"],
+           "report layout: two tables in one text file, named by their labels")
+        pr = facts("report", "telecom_target")[0]
+        ok(pr["target"] == E["report_target"] and pr["calls"] == 8 and pr["data_sessions"] == 4,
+           "report layout: target from 'Voice Usage For'; table label gives the record kind")
+        loc = q("report", "SELECT lat, lon FROM tel WHERE lat IS NOT NULL LIMIT 1")[0]
+        ok(38 < loc[0] < 39 and -78 < loc[1] < -77, "report layout: CellLocation read longitude-first")
+        rq = facts("report", "telecom_quality")[0]
+        ok(rq["imei_sci"] == 1, "report layout: IMEI in scientific notation flagged and not used")
+        # HDA: preamble target, date + separate time column
+        ok(facts("hda", "telecom_target")[0]["target"] == E["hda_target"], "HDA layout: target from 'o Target MSISDN :'")
+        ok(len({r[0] for r in q("hda", "SELECT ts_utc FROM tel")}) == 20, "HDA layout: date and time columns combined (20 distinct times)")
+        # tower dumps across carriers and scenes
+        ok(len(facts("dumps", "telecom_dump_scene")) == 2, "tower dumps grouped into 2 scenes across carriers")
+        ok([f["phone"] for f in facts("dumps", "telecom_dump_multi")] == [E["both_scenes"]],
+           "tower dumps: exactly the phone planted at both scenes")
+        tw = facts("dumps", "telecom_dump_imei")
+        ok(len(tw) == 1 and set(tw[0]["phones"]) == E["twin_numbers"], "tower dumps: one handset under two numbers at both scenes")
+        ok(not facts("dumps", "telecom_target"), "tower-dump phones are not reported as targets")
+    finally:
+        for k, v_ in old_env.items():
+            if v_ is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v_
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def telecom_tests():
+    import hashlib
+    import xml.etree.ElementTree as ET
+    from spoor.figures import figure_rows
+    from spoor.figures.svg import check_svg
+    sys.path.insert(0, str(ROOT / "tests"))
+    import make_telecom_demo
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-tel-"))
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    try:
+        make_telecom_demo.main(str(tmp / "returns"))
+        same = all((tmp / "returns" / p.relative_to(ROOT / "demo" / "telecom")).read_bytes() == p.read_bytes()
+                   for p in (ROOT / "demo" / "telecom").rglob("*") if p.is_file() and p.suffix != ".xlsx")
+        ok(same, "telecom demo generator reproduces the bundled demo files")
+
+        def outputs(c):
+            out = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((c.report_dir / "figures").glob("*.svg"))}
+            for n in ("telecom.kml", "colocation.csv", "common_contacts.csv", "target_overlap.csv", "telecom_records.csv"):
+                out[n] = hashlib.sha256((c.exports_dir / n).read_bytes()).hexdigest()
+            return out
+
+        a, con = _figure_case(tmp / "a", "Telecom", tmp / "returns")
+        ha = outputs(a)
+        pl = make_telecom_demo.PLANTED
+        rows = con.execute("SELECT kind, facts FROM findings WHERE module='telecom'").fetchall()
+        facts = [(k, json.loads(f)["values"]) for k, f in rows]
+        com = [x for k, x in facts if k == "telecom_common" and x["other"] == pl["common_contact_3"][0]]
+        ok(com and set(com[0]["targets"]) == pl["common_contact_3"][1], "telecom: the 3-target common contact found with the right targets")
+        com2 = [x for k, x in facts if k == "telecom_common" and x["other"] == pl["common_contact_2"][0]]
+        ok(com2 and set(com2[0]["targets"]) == pl["common_contact_2"][1], "telecom: the 2-target common contact found")
+        dirs = {tuple(sorted((x["target_a"], x["target_b"]))) for k, x in facts if k == "telecom_direct"}
+        ok(dirs == {tuple(sorted(d)) for d in pl["direct"]}, f"telecom: exactly the planted direct contacts ({dirs})")
+        sh = [x for k, x in facts if k == "telecom_shared_imei"]
+        ok(len(sh) == 1 and sh[0]["imei"] == pl["shared_imei"][0][:14] and set(sh[0]["targets"]) == pl["shared_imei"][1],
+           "telecom: shared IMEI (compared on its first 14 digits)")
+        ch = [x for k, x in facts if k == "telecom_imei_change" and x["target"] == pl["imei_change"][0]]
+        ok(ch and ch[0]["imeis"] == [pl["imei_change"][1][:14], pl["imei_change"][2][:14]], "telecom: handset change in time order")
+        co = {tuple(sorted((x["target_a"], x["target_b"]))) for k, x in facts if k == "telecom_colocation"}
+        ok(co == {tuple(sorted(c)) for c in pl["colocation"]}, f"telecom: exactly the planted co-locations ({co})")
+        cross = [x for k, x in facts if k == "telecom_colocation" and "+17035550101" in (x["target_a"], x["target_b"])]
+        ok(cross and 0 < cross[0]["closest_distance_m"] <= 100, "telecom: cross-carrier co-location by coordinates (sites ~26 m apart)")
+        mx = [x for k, x in facts if k == "telecom_overlap"]
+        ok(mx and mx[0]["most_shared"] == pl["common_contact_3"][0], "telecom: overlap table across all targets")
+        q = con.execute("SELECT COUNT(*) FROM findings WHERE module IN ('links','counterparties','idents') AND "
+                        "kind IN ('shared_identifier','counterparties','account_contacts')").fetchone()[0]
+        ok(q == 0, "telecom: no duplicate shared-identifier / counterparty findings for call records")
+        root = ET.parse(a.exports_dir / "telecom.kml").getroot()
+        ns = "{http://www.opengis.net/kml/2.2}"
+        folders = [f.find(ns + "name").text for f in root.iter(ns + "Folder")]
+        ok(folders[0].startswith("Cell sites used") and folders[-1] == "Co-location occasions" and len(folders) == 6,
+           f"KML: cell sites, one folder per target, co-location ({len(folders)} folders)")
+        stamps = [w.text for w in root.iter(ns + "when")]
+        ok(stamps and all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", t) for t in stamps), "KML: every record time-stamped in UTC")
+        txt = (a.exports_dir / "telecom.kml").read_text(encoding="utf-8")
+        ok(txt.count("http") == 1 and "href" not in txt, "KML: no external references (icons, links)")
+        ok(re.search(r"Record: S\d+:L\d+", txt) and re.search(r"Site location: tower list in the same folder \(by cell label\) S\d+:L\d+", txt),
+           "KML: each point cites its call record and the tower-list row of its location")
+        figs = {f["slug"]: f for f in figure_rows(con)}
+        f3 = figs["contacts"]
+        ok(f3["status"] == "ok" and not check_svg((a.report_dir / "figures" / f3["file"]).read_text(encoding="utf-8")),
+           "target-contact chart drawn, layout checks pass")
+        drawn = {(t, k, n) for t, k, n in f3["meta"]["edges"] if "|" not in k}
+        got = {(r[0], r[1], r[2]) for r in con.execute(f3["data_sql"][0][1])}
+        ok(drawn and drawn <= got, "target-contact chart: the data query returns the lines drawn")
+        marks = {r["fid"] for r in figs["timeline"]["refs"]}
+        cofid = {r[0] for r in con.execute("SELECT fid FROM findings WHERE kind='telecom_colocation'")}
+        ok(cofid <= marks, "co-location marked on the activity timeline")
+        rv = (a.report_dir / "REVIEW.md").read_text(encoding="utf-8")
+        ok("read as telecom records - check the columns" in rv, "REVIEW.md asks to confirm the telecom column mapping")
+        mt = (a.report_dir / "METHODS.md").read_text(encoding="utf-8")
+        ok("### Telecom returns" in mt and "not that the users were together" in mt, "METHODS.md describes telecom reading and its limits")
+        cc = json.loads(con.execute("SELECT value FROM meta WHERE key='citation_check'").fetchone()[0])
+        ok(cc["fail"] == 0 and cc["total"] > 0, f"telecom: every cited record re-read and matched ({cc['pass']})")
+        # determinism and resume
+        b, _ = _figure_case(tmp / "b", "Telecom", tmp / "returns", interrupt=_cancel_once("spoor.telecom", "build"))
+        ok(outputs(b) == ha, "telecom: a run interrupted in the telecom stage, then resumed, gives identical figures, KML and exports")
+        # a CDR with no target named anywhere: the target is inferred and flagged
+        (tmp / "inf").mkdir()
+        lines = ["Date (UTC),Calling Number,Called Number,Duration"]
+        for i in range(30):
+            o, t = ("2025550177", f"30155501{i % 10:02d}") if i % 2 else (f"30155501{i % 10:02d}", "2025550177")
+            lines.append(f"2024-05-{1 + i % 20:02d} 1{i % 10}:00:00,{o},{t},{30 + i}")
+        (tmp / "inf" / "carrier_cdr.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        d, cond = _figure_case(tmp / "d", "Inferred", tmp / "inf")
+        tq = [json.loads(f)["values"] for (f,) in cond.execute("SELECT facts FROM findings WHERE kind='telecom_quality'")]
+        inf = (tq[0]["inferred_targets"] if tq else {})
+        ok(inf and list(inf.values())[0]["target"] == "+12025550177", f"target inferred from a CDR that names none ({inf})")
+        pr = cond.execute("SELECT priority FROM findings WHERE kind='telecom_quality'").fetchone()[0]
+        ok(pr == 1 and "inferred from the data" in (d.report_dir / "REVIEW.md").read_text(encoding="utf-8"),
+           "the inferred target is a priority-1 assumption in REVIEW.md")
+        dirs = dict(cond.execute("SELECT dir, COUNT(*) FROM tel GROUP BY dir").fetchall())
+        ok(dirs.get("out") == 15 and dirs.get("in") == 15, f"directions from the inferred target's side ({dirs})")
+    finally:
+        for k, v_ in old_env.items():
+            if v_ is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v_
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cellref_tests():
+    """Reference cell-site library (fictional lists): indexing, carrier choice, ECI collisions between carriers."""
+    from spoor import cellref
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-cellref-"))
+    old = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS", "SPOOR_CELLSITES")}
+    try:
+        lib = tmp / "cellsites"
+        (lib / "Verizon_Test").mkdir(parents=True)
+        (lib / "TMOB_Test").mkdir(parents=True)
+        # ECI 1000001 is in both carriers' lists at different places; 2000002 only Verizon; 3000003 both, same place
+        (lib / "Verizon_Test" / "Region_CALEA.V0.csv").write_text(
+            "SITE NUMBER,LATITUDE,LONGITUDE,SECTOR,AZIMUTH (DEG),ANTENNA H-BW (DEG),ENODEB ID,ECGI\n"
+            f"0101,40.100000,-75.100000,1,30,65,{1000001 // 256},311480-{1000001:07X}\n"
+            f"0102,40.200000,-75.200000,2,150,65,{2000002 // 256},311480-{2000002:07X}\n"
+            f"0103,40.300000,-75.300000,3,270,65,{3000003 // 256},311480-{3000003:07X}\n"
+            "0104,40.400000,-75.400000,1,90,65,,\n", encoding="utf-8")
+        (lib / "TMOB_Test" / "TEST-2025-01.csv").write_text(
+            "Market_Name,Cell_ID,NodeB_ID,CGI,Azimuth,Site_Latitude,Site_Longitude,Horizontal_BW,List_Date\n"
+            f"TEST,{1000001 % 256},{1000001 // 256},1000001,NULL,41.500000,-76.500000,NULL,1/1/2025 12:00:00 AM\n"
+            f"TEST,{3000003 % 256},{3000003 // 256},3000003,270,40.300100,-75.300100,60,1/1/2025 12:00:00 AM\n",
+            encoding="utf-8")
+        (lib / "Verizon_Test.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)     # extracted copy beside it: skipped
+        logs = []
+        r = cellref.index(lib, log=logs.append)
+        ok(r["carriers"].get("Verizon", {}).get("cells") == 3 and r["carriers"].get("T-Mobile", {}).get("cells") == 2,
+           f"library index: 3 Verizon + 2 T-Mobile LTE cells (non-LTE row skipped) ({r['carriers']})")
+        ok(any("already extracted" in x for x in logs), "library index: a ZIP with its extracted folder beside it is skipped")
+        r2 = cellref.index(lib, log=lambda *a: None)
+        ok(r2["new"] == 0, "library index: unchanged lists are not re-read")
+        L = cellref.Library(lib)
+        ok(sorted(c["carrier"] for c in L.by_eci(1000001)) == ["T-Mobile", "Verizon"], "library lookup by ECI returns every carrier")
+        L.close()
+        ok(cellref.carrier_hint("D:/x/CellSites-CDR_Test_15555550100.csv")[0] == "Verizon"
+           and cellref.carrier_hint("C:/r/CDR_Mediations_15555550100.xlsx")[0] == "T-Mobile"
+           and cellref.carrier_hint("C:/r/ReportAU_1.txt")[0] == "AT&T"
+           and cellref.carrier_hint("C:/r/calls.csv")[0] == "", "carrier hints from return file names")
+
+        ret = tmp / "returns"
+        ret.mkdir()
+        hdr = "Calling Number,Called Number,Start Time (UTC),Duration (sec),ECI\n"
+        rows = "".join(f"5555550{100 + i},5555550{150 + i},2025-03-0{1 + i} 1{i}:00:00,60,{e}\n"
+                       for i, e in enumerate((1000001, 2000002, 3000003, 4000004)))
+        (ret / "CellSites-CDR_TEST_5555550100.csv").write_text(hdr + rows, encoding="utf-8")
+        (ret / "calls_export_5555550200.csv").write_text(hdr + rows.replace("5555550", "5555551"), encoding="utf-8")
+        os.environ["SPOOR_CELLSITES"] = str(lib)
+        c, con = _figure_case(tmp / "c1", "Library", ret, params={"figures": False})
+
+        def loc(name, eci):
+            return con.execute("SELECT t.lat, t.lon, t.loc_basis, c.loc_cite FROM tel t JOIN sources s ON s.id=t.source_id "
+                               "JOIN calls c ON c.id=t.event_id WHERE s.display LIKE ? AND t.eci=?", (f"%{name}%", eci)).fetchone()
+        v = loc("CellSites-CDR", 1000001)
+        ok(v and abs(v[0] - 40.1) < 1e-6 and "Verizon" in v[2] and "cellsites/Verizon_Test/Region_CALEA.V0.csv" in (v[3] or ""),
+           f"Verizon-named return: colliding ECI placed from the Verizon list, citing file and row ({v})")
+        g = loc("calls_export", 1000001)
+        ok(g and g[0] is None, "return with no carrier: ECI named by two carriers at different places is left unlocated")
+        g2, g3 = loc("calls_export", 2000002), loc("calls_export", 3000003)
+        ok(g2 and g2[0] is not None and g3 and g3[0] is not None,
+           "return with no carrier: ECI in one list, or in lists that agree, is placed")
+        q = json.loads(con.execute("SELECT facts FROM findings WHERE kind='telecom_quality'").fetchone()[0])["values"]
+        reasons = q["unlocated_reasons"]
+        ok(any("several carriers" in k for k in reasons) and q["library"]["matched"] == 5,
+           f"quality finding counts library matches and the carrier collision ({q['library']['matched']}, {reasons})")
+        rv = (c.report_dir / "REVIEW.md").read_text("utf-8")
+        ok("Reference cell-site list used" in rv and "Verizon_Test/Region_CALEA.V0.csv" in rv, "REVIEW lists the library files used")
+        mt = (c.report_dir / "METHODS.md").read_text("utf-8")
+        ok("Reference cell-site library" in mt, "METHODS describes the library")
+
+        c2, con2 = _figure_case(tmp / "c2", "Library forced", ret, params={"figures": False},
+                                case_params={"tel_carrier": "T-Mobile"})
+        r = con2.execute("SELECT t.lat FROM tel t JOIN sources s ON s.id=t.source_id WHERE s.display LIKE '%calls_export%' "
+                         "AND t.eci=1000001").fetchone()
+        ok(r and abs(r[0] - 41.5) < 1e-6, "case setting tel_carrier picks that carrier's list")
+
+        os.environ["SPOOR_CELLSITES"] = str(tmp / "none")
+        c3, con3 = _figure_case(tmp / "c3", "No library", ret, params={"figures": False})
+        ok(not con3.execute("SELECT COUNT(*) FROM tel WHERE lat IS NOT NULL").fetchone()[0],
+           "without a library nothing is placed (bring-your-own lists only)")
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def report_tests():
+    """Returns lifecycle, cross-return page, negative results, BLUF-first report, references, telecom map files."""
+    from spoor import db as dbm
+    from spoor import returns as rets
+    from spoor.jobs import start_job
+    from spoor.selftest import demo_returns_dir
+    root = Path(tempfile.mkdtemp(prefix="spoor-report-"))
+    c, con = _figure_case(root, "Report-demo", demo_returns_dir())
+    ok(not [r[0] for r in con.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "no analysis module failed")
+    ok(rets.multi(con) and len(rets.active_returns(con)) >= 6, "demo folder grouped into returns (R01...)")
+    rp = c.report_dir
+    for fn in ("REPORT.md", "REPORT-FULL.md", "CROSSREF.md"):
+        ok((rp / fn).exists(), f"{fn} written")
+    txt = (rp / "REPORT.md").read_text(encoding="utf-8")
+    pos = [txt.find(h) for h in ("## BLUF", "## Figures", "## What the records show", "## References", "## Appendix A")]
+    ok(all(x >= 0 for x in pos) and pos == sorted(pos), "REPORT.md order: BLUF, figures, narrative, references, appendix A")
+    a = txt.find("## Appendix A")
+    ok("No IP address was the source of failed logins" not in txt[:a] and "No IP address was the source of failed logins" in txt[a:],
+       "negative results appear only in Appendix A")
+    cited = set(re.findall(r"\(#ref-(\d+)\)", txt))
+    anchors = set(re.findall(r'<a id="ref-(\d+)"></a>', txt))
+    ok(cited and cited <= anchors, f"every reference number cited has a bibliography entry ({len(anchors)} entries)")
+    ok(re.search(r"\*\*\[1\]\*\* .*S\d+ \(R\d+ ", txt) is not None, "bibliography names source, return and file")
+    xr = (rp / "CROSSREF.md").read_text(encoding="utf-8")
+    ok("+17035550142" in xr and "R01" in xr, "CROSSREF.md lists the shared phone number with the returns it is in")
+    ok("**Map:**" not in txt and not (rp / "exports" / "telecom.geojson").exists(), "no map line or GeoJSON when there are no telecom records")
+    # leave a return out, run again, put it back
+    n_all = con.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+    rets.set_state(con, c, "R05", "excluded", "test")
+    start_job(c, con, "run", {"llm": False}, wait=True)
+    con = c.db()
+    txt2 = (rp / "REPORT.md").read_text(encoding="utf-8")
+    ok("Left out by the analyst: R05" in txt2, "report names the return that was left out")
+    ok("R05" not in (rp / "CROSSREF.md").read_text(encoding="utf-8").split("Left out by the analyst")[0].split("## Items present")[-1],
+       "excluded return takes no part in the cross-return items")
+    rets.set_state(con, c, "R05", "active")
+    start_job(c, con, "run", {"llm": False}, wait=True)
+    con = c.db()
+    ok(con.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == n_all, "including the return again restores the same findings")
+    # telecom: map files and map line
+    tc, tcon = _figure_case(Path(tempfile.mkdtemp(prefix="spoor-tel-report-")), "Tel-report", ROOT / "demo" / "telecom")
+    t = (tc.report_dir / "REPORT.md").read_text(encoding="utf-8")
+    ok("**Map:**" in t and (tc.report_dir / "exports" / "telecom.geojson").exists() and (tc.report_dir / "exports" / "telecom.kml").exists(),
+       "telecom case: report names the KML and GeoJSON, both written")
+    from spoor.mapdata import map_data
+    d = map_data(tcon, tc.params)
+    ok(d["status"]["map"] and d["sites"] and d["targets"], "map data has cell sites and located records per target")
+    ok(not [r[0] for r in tcon.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "telecom case: no analysis module failed")
+
+
+def links_tests():
+    """Contact chains ('degrees of separation') across call-record returns and a tower dump (demo/links, fictional)."""
+    import json as _json
+    sys.path.insert(0, str(ROOT / "tests"))
+    import make_links_demo as mld
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-links-"))
+    mld.R.seed(20261014)
+    mld._used.clear()
+    mld._used.update({mld.T1, mld.T3, mld.T6, mld.X1, mld.X2, mld.X3, mld.D1, mld.D2})
+    mld.main(str(tmp / "gen"))
+    bundled = ROOT / "demo" / "links"
+    ok(all((tmp / "gen" / p.relative_to(bundled)).read_bytes() == p.read_bytes() for p in bundled.rglob("*") if p.is_file()),
+       "links demo generator reproduces the bundled files")
+    c, con = _figure_case(tmp / "case", "Links", bundled, params={"figures": False},
+                          case_params={"tel_link_sets": [{"name": "BG1-BG6-dump", "members": ["(703) 555-0201", "571.555.0206", "dump:ReportTOWER_0000091"]}]})
+    ok(not [r[0] for r in con.execute("SELECT key FROM meta WHERE key LIKE 'analysis_error%'")], "links case: no analysis module failed")
+    from spoor.contactgraph import Graph
+    g = Graph(con, c.params)
+    T1, T3, T6, X1, X2, X3 = (g.find(x) for x in (mld.T1, mld.T3, mld.T6, mld.X1, mld.X2, mld.X3))
+    ok(T1 == "+17035550201" and g.find("703-555-0201") == T1, "numbers are found in any format")
+    r = g.connect([T1, T6], 6)
+    pr = r["pairs"][0]
+    ok(pr["hops"] == 4 and pr["paths"] == [[T1, X1, T3, X2, T6], [T1, X3, T3, X2, T6]], f"T1 to T6: 4 hops, both planted chains ({pr['hops']}, {len(pr['paths'])})")
+    ok(r == g.connect([T1, T6], 6), "same choice, same chains (deterministic)")
+    ok(any(x["node"] == "611" for x in r["left_out"]) and all("611" not in p for p in pr["paths"]), "short code 611 is never used as a link")
+    DN = g.find("dump:reporttower")
+    r3 = g.connect([T1, T6, DN], 6)
+    hops = {(p["a"], p["b"]): p["hops"] for p in r3["pairs"]}
+    ok(hops == {(T1, T6): 4, (T1, DN): 3, (T6, DN): 3}, f"three-way link with a tower dump ({hops})")
+    ok(all(DN not in p[1:-1] for pp in r3["pairs"] for p in pp["paths"]), "a tower dump is never a stepping stone")
+    ok(g.connect([T1, T6], 3)["pairs"][0]["hops"] is None, "not linked when the longest chain allowed is too short")
+    g2 = Graph(con, dict(c.params, tel_hub_max=2))
+    r2 = g2.connect([T1, T6], 6)
+    ok(r2["pairs"][0]["hops"] is None and any(x["node"] == X2 for x in r2["left_out"]), "contacts with more neighbours than tel_hub_max are not links, and are listed")
+    # review fixes: toll-free numbers, stepping-stone strength, time order, baseline (#1 F-07, #2 G-F4, #3 SR-07)
+    ok(g.blocked_reason("+18005551212") == "toll-free number" and g.blocked_reason("+18885550100") == "toll-free number",
+       "toll-free numbers are never stepping stones")
+    ok(len(pr["ordered"]) == len(pr["paths"]), "every chain says whether it can be read in time order")
+    st = r["through"][X2]
+    ok({"records", "returns", "weak", "returned"} <= set(st) and st["returned"] is False and st["records"] >= 2,
+       f"stepping stones carry their record and return counts ({st})")
+    bl = r["baseline"]
+    ok(bl["pairs"] == len(g.targets[:30]) * (len(g.targets[:30]) - 1) // 2 and set(bl["linked_within"]) == set(range(1, 7)),
+       f"every result carries the baseline over target pairs ({bl})")
+    g3 = Graph(con, c.params)
+    e1, e2 = g3.edges[g3._k(T1, X1)], g3.edges[g3._k(X1, T3)]
+    e1["times"], e2["times"] = [2000.0], [1000.0]
+    ok(g3.time_ordered([T1, X1, T3]) is False and g3.time_ordered([T3, X1, T1]) is True, "time order: a later hop needs a record no earlier than the hop before")
+    r3o = g3.connect([T1, T3], 6, ordered_only=True)
+    ok(all(g3.time_ordered(p) for p in r3o["pairs"][0]["paths"]) and X1 not in sum(r3o["pairs"][0]["paths"], []),
+       "time-ordered mode drops chains that cannot be read in time order")
+    def facts(kind):
+        return [_json.loads(f)["values"] for (f,) in con.execute("SELECT facts FROM findings WHERE kind=? AND fid IS NOT NULL ORDER BY fid", (kind,))]
+    tp = facts("telecom_path")
+    ok(tp and "baseline_linked_within" in tp[0] and "time_ordered_chains" in tp[0], "the chain finding states time order and the baseline")
+    ok(len(tp) == 1 and tp[0]["hops"] == 4 and tp[0]["chains"] == 2, "finding: the two targets linked only through a 4-hop chain")
+    ev = con.execute("SELECT COUNT(*) FROM finding_evidence fe JOIN findings f ON f.id=fe.finding_id WHERE f.kind='telecom_path'").fetchone()[0]
+    ok(ev == 4, f"the chain finding cites one record per hop ({ev})")
+    dp = {(v["target"], tuple(v["chain"][1:-1])) for v in facts("telecom_dump_path")}
+    ok((T1, ("+14105550222", X1)) in dp and (T6, ("+14105550221", X2)) in dp, "finding: tower-dump phones linked to targets through a contact")
+    ok(all(v["other"] != "611" for v in facts("telecom_common")), "short code 611 is not reported as a common contact")
+    ls = facts("telecom_link_set")
+    ok(len(ls) == 1 and [p[2] for p in ls[0]["pairs"]] == [4, 3, 3] and not ls[0]["missing"], "saved link group reported with its chains")
+    cc = dbm_meta(con, "citation_check")
+    ok(cc.get("total", 0) > 0 and cc.get("fail", 1) == 0, "links case: every citation re-read and matched")
+    gl = grammar_lint(c.report_dir)
+    ok(not gl, f"links case reports: number agreement ({gl[:5]})")
+    rep = (c.report_dir / "REPORT.md").read_text(encoding="utf-8")
+    ok("linked in 4 hops" in rep[: rep.find("## References")], "the 4-hop chain is in the analysis text")
+    from spoor.web import server as srv
+    res = srv.api_links(None, {}, {"seeds": ["7035550201", "5715550206"], "max_hops": 6}, "Links")
+    ok(res["pairs"][0]["hops"] == 4 and all(e["first_cite"] for e in res["edges"]), "Links API: chains with a citation on every hop")
+    try:
+        srv.api_links(None, {}, {"seeds": ["7035550201"]}, "Links")
+        ok(False, "Links API refuses a single number")
+    except srv.ApiError:
+        ok(True, "Links API refuses a single number")
+
+
+NOUNS_S = ("records|returns|accounts|files|findings|hops|chains|pairs|numbers|events|logins|logouts|contacts|items|days|hours|phones|"
+           "targets|timestamps|changes|addresses|IPs|failures|calls|texts|sources|sessions")
+
+
+def grammar_lint(report_dir) -> list:
+    """'1 records', '1 timestamp have', '2 record' style number-agreement slips in the generated reports."""
+    import re as _re
+    bad = _re.compile(r"(?<![\w.,:/+-])1 (?:\w+ )?(?:" + NOUNS_S + r")\b(?! of)|(?<![\w.,:/+-])1 \w+ (?:have|are|were)\b")
+    hits = []
+    for f in Path(report_dir).glob("*.md"):
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for m in bad.finditer(line):
+                hits.append(f"{f.name}:{i}: ...{line[max(0, m.start() - 30):m.end() + 15]}...")
+    return hits
+
+
+def dbm_meta(con, key):
+    from spoor import db as dbm
+    return dbm.get_meta(con, key) or {}
+
+
+def review_regressions():
+    """Every confirmed finding of the three independent reviews (brief sections 10-13) as a regression test."""
+    import json as _json
+    FX = ROOT / "tests" / "review_fixtures"
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-review-"))
+
+    def case(name, tz="UTC"):
+        c, con = _figure_case(tmp / name, f"rv-{name}", FX / name, tz=tz, params={"figures": False})
+        return c, con
+
+    def evs(con):
+        return [dict(zip(("cite", "ts_utc", "ip", "flag", "action"), r)) for r in con.execute(
+            "SELECT s.label || ':' || e.loc, e.ts_utc, e.ip, e.ts_flag, e.action FROM events e JOIN sources s ON s.id=e.source_id ORDER BY e.id")]
+
+    def kinds(con):
+        return [r[0] for r in con.execute("SELECT kind FROM findings WHERE fid IS NOT NULL")]
+
+    def cfg(con):
+        return _json.loads(con.execute("SELECT config FROM sources WHERE status != 'container' ORDER BY id").fetchone()[0])
+
+    # --- pairing (review #1 F-04 variant, #2 G-F3, #3 SR-03)
+    _c, con = case("f04b")
+    got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
+    ok(got == {"192.0.2.1": "2024-01-01 10:00:00", "192.0.2.5": "2024-01-01 11:00:00", "192.0.2.9": "2024-01-01 12:00:00"},
+       f"time-first key/value layout: every IP keeps its own record's time ({got})")
+    _c, con = case("g03")
+    got = {e["ip"]: (e["ts_utc"], e["action"]) for e in evs(con) if e["ip"]}
+    ok(got.get("198.51.100.10") == ("2026-05-01 01:00:00", "Action: Login Success") and got.get("198.51.100.20", ("",))[0] == "2026-05-01 02:00:00",
+       "time / action / browser / IP blocks: the password change stays with its own IP")
+    _c, con = case("f04")
+    got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
+    ok(got.get("192.0.2.5") is None and got.get("192.0.2.9") == "2024-01-01 11:00:00", "an IP whose record has no time stays unpaired; the next record is not shifted")
+    _c, con = case("c03")       # review #3: small key/value file, one record with an empty 'Time:' field
+    got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
+    ok(got == {"203.0.113.10": "2024-05-01 10:00:00", "198.51.100.20": None},
+       f"key/value records: IP keeps its own record's time; an empty 'Time:' field starts a record and its IP stays unpaired ({got})")
+    from spoor.readers.textmode import TextModeExtractor
+    ex = TextModeExtractor(window=6)
+    lines = ["Time: 2024-01-01 10:00:00 UTC", "IP Address: 192.0.2.1", "Time: 2024-01-01 11:00:00 UTC"]
+    recs = [r for i, t in enumerate(lines, 1) for r in ex.feed(f"L{i}", i, 0, len(t), t)] + list(ex.finish())
+    ok(any(r.fields.get("ip") == "192.0.2.1" and r.fields.get("ts", "").startswith("2024-01-01 10:00") for r in recs),
+       "keyed record: the time of the IP's own record wins over the next record's at the same distance")
+    ex = TextModeExtractor(window=6)
+    lines = ["2024-01-01 10:00:00 login", "192.0.2.7", "2024-01-01 11:00:00 logout"]
+    recs = [r for i, t in enumerate(lines, 1) for r in ex.feed(f"L{i}", i, 0, len(t), t)] + list(ex.finish())
+    ok(any(r.fields.get("ip") == "192.0.2.7" and not r.fields.get("ts") and "not paired" in r.note for r in recs),
+       "unkeyed text: a time before and after at the same distance is a tie - not paired, and says so")
+    # --- day/month order (review #1 F-03, #2 G-F7, #3 SR-02) and date-only (#2 Q14.3)
+    _c, con = case("g07")
+    t0 = cfg(con)["tables"][0]
+    rng = tuple(con.execute("SELECT COUNT(ts_utc), MIN(ts_utc), MAX(ts_utc) FROM events").fetchone())
+    ok(t0["date_order"] == "DMY" and rng == (260, "2026-05-01 00:00:00", "2026-05-13 14:10:00") and "gap" not in kinds(con),
+       f"day-first proven by a row past the 200-row sample: file read again as DD/MM, no false gaps ({rng})")
+    _c, con = case("f03")
+    flagged = [e for e in evs(con) if "date_order_assumed" in (e["flag"] or "")]
+    ok(len(flagged) == 5 and "flag_date_order_assumed" in kinds(con), "unproven day/month order: each ambiguous event flagged")
+    ok(not con.execute("SELECT COUNT(*) FROM findings WHERE kind IN ('failed_burst','gap')").fetchone()[0],
+       "events with an assumed day/month order take no part in timing findings")
+    _c, con = case("g14")
+    ok("failed_burst" not in kinds(con), "date-only failed logins make no '0-second' burst")
+    # --- timezone (review #1 F-01/F-02, #2 G-F6/Q2, #3 SR-01)
+    _c, con = case("f01")
+    c1 = cfg(con)
+    ok(c1["tz"] == "UTC" and not c1["tz_assumed"], "a sentence saying the times are UTC beats a 'Generated ... PST' line")
+    ok(evs(con)[0]["ts_utc"] == "2024-04-02 03:00:00", "times stated as UTC are not shifted by the report-time line")
+    _c, con = case("f02a")
+    ok(cfg(con)["tz_assumed"] is True and "China" in cfg(con)["tz_basis"], "header (CST) alone: zone ASSUMED, both meanings named")
+    _c, con = case("f02b")
+    ok(cfg(con)["tz_assumed"] is True, "header (EST) alone: zone ASSUMED (fixed -05:00 or New York)")
+    _c, con = case("g06b")
+    ok(cfg(con)["tz"] == "UTC", "the timestamp column's own header decides, not another column's")
+    from spoor.timeparse import suggest_source_tz
+    r = suggest_source_tz([], [("L2", "Times in this report are UTC"), ("L3", "All times below are in PST")], "x.csv")
+    ok(r["assumed"] is True and r["conflicts"], "two data-scope statements naming different zones: ASSUMED, conflict listed")
+    # --- cell identity (review #1 F-05, #2 G-F1/F2/Q9, #3 SR-05)
+    from spoor.telecom import norm_imei, parse_eci
+    cases_eci = {"310260-2560001": 2560001, "311480-0c82216": 0x0C82216, "311480-1234567": 0x1234567, "48221-2": 48221 * 256 + 2,
+                 "145210-2": 145210 * 256 + 2, "0012345-1": 12345 * 256 + 1, "310260012344578": 12344578, "23415123456789": 123456789}
+    bad = {k: parse_eci(k)[0] for k, v in cases_eci.items() if parse_eci(k)[0] != v}
+    ok(not bad, f"ECI spellings: decimal unless hex is known, eNodeB-cell when the cell is under 256 ({bad or 'all right'})")
+    ok(norm_imei("000000000000000")[0] is None and norm_imei("111111111111111")[0] is None, "placeholder IMEIs are not handsets")
+    # --- co-location by label only (review #1 F-06, #2 G-F10, #3 SR-06)
+    # --- cross-return identity (review #1 F-09, #2 G-F9, #3 SR-10)
+    _c, con = case("g09")
+    xs = [_json.loads(r[0]) for r in con.execute("SELECT facts FROM findings WHERE kind='crossref_item'")]
+    ok(not any(str(x["values"]["value"]).lower() in ("unknown", "n/a") for x in xs), "placeholder accounts (unknown, N/A) are never matched across returns")
+    summ = con.execute("SELECT statement FROM findings WHERE kind IN ('crossref_summary','crossref_none')").fetchone()
+    ok(summ is not None, "cross-return summary present for the placeholder case")
+    _c, con = case("f09")
+    xs = [(_json.loads(r[0]), r[1], r[2]) for r in con.execute("SELECT facts, statement, priority FROM findings WHERE kind='crossref_item'")]
+    u = [x for x in xs if x[0]["values"]["kind"] == "username"]
+    ok(len(u) == 1 and "same name string only" in u[0][1] and "letter case differs" in u[0][1] and u[0][2] == 2,
+       "a bare username across providers is labelled 'same name string; verify', case difference noted, priority 2")
+    gl = grammar_lint(_c.report_dir)
+    ok(not gl, f"cross-return reports: number agreement ({gl[:5]})")
+    # --- BLUF selection (review #2 G-Q5, #3 SR-12): watchlist/telecom first, at most 2 per theme, omitted ones counted
+    from spoor.analysis import pick_round_robin, BLUF_ORDER
+    pools = {k: [] for k in BLUF_ORDER}
+    pools["access"] = [f"a{i}" for i in range(9)]
+    pools["watch"] = ["w0"]
+    pools["telecom"] = ["t0", "t1", "t2"]
+    pools["returns"] = ["r0"]
+    got, omitted = pick_round_robin(pools)
+    ok(got[:2] == ["w0", "t0"] and "t1" in got and "r0" in got and len(got) == 8 and omitted == 6,
+       f"BLUF: watchlist and telecom leads are never crowded out by account-access leads; the rest are counted ({got}, {omitted})")
+    pools = {k: [] for k in BLUF_ORDER}
+    pools["access"] = [f"a{i}" for i in range(5)]
+    got, omitted = pick_round_robin(pools)
+    ok(got == pools["access"] and omitted == 0, "BLUF: a single theme still fills the free slots")
+    # --- return grouping (review #2 G-F9, #3 SR-10)
+    _c, con = case("grp_google")
+    rs = list(con.execute("SELECT label, note FROM returns"))
+    ok(len(rs) == 1 and rs[0][1].startswith("Kept as ONE return"), f"category sub-folders of one production stay one return ({rs})")
+    ok(not con.execute("SELECT 1 FROM findings WHERE kind='crossref_item'").fetchone(), "one production is not cross-matched with itself")
+    from spoor.jobs import status_text
+    ok("Check return R01" in status_text(_c, con), "the grouping decision is shown in spoor status")
+    rv = next(_c.dir.rglob("REVIEW.md"), None)
+    ok(rv is not None and "Return grouping, **R01**" in rv.read_text(), "the grouping decision is a REVIEW.md item")
+    _c, con = case("grp_flat")
+    rs = list(con.execute("SELECT label, note FROM returns"))
+    ok(len(rs) == 1 and "Meta" in rs[0][1] and "Snap" in rs[0][1], f"a flat folder naming two providers is flagged for splitting ({rs})")
+    _c, con = case("samecell")
+    ok("telecom_colocation" not in kinds(con) and "telecom_same_cell" in kinds(con) and "telecom_shared_imei" not in kinds(con),
+       "same cell label without coordinates: a 'same cell label' note, not co-location; all-zero IMEI links nobody")
+    # --- placeholder accounts and usernames across providers (review #1 F-09, #2 G-F9, #3 SR-10)
+    # (kept as a known gap until the cross-return identity fix: recorded, not asserted)
+    # --- negatives (review #1 F-13) - recorded until the negatives fix
+    # --- reproduce queries (review #1 F-08, #2 G-F8, #3 SR-09)
+    for db in [p for p in tmp.rglob("case.db")]:
+        cn = __import__("sqlite3").connect(db)
+        fails = cn.execute("SELECT value FROM meta WHERE key='sql_failures'").fetchone()
+        ok(not fails or _json.loads(fails[0]) == [], f"{db.parent.name}: every evidence-backed reproduce query runs and returns rows")
+    # --- failed module surfaces (review #3 SR-08)
+    import spoor.analyses.watchlist as W
+    orig = W.Watchlist.run
+    W.Watchlist.run = lambda self: (_ for _ in ()).throw(RuntimeError("injected failure"))
+    try:
+        c, con = _figure_case(tmp / "injected", "rv-injected", FX / "f01", tz="UTC", params={"figures": False})
+    finally:
+        W.Watchlist.run = orig
+    from spoor.jobs import status_text
+    rep = (c.report_dir / "REPORT.md").read_text(encoding="utf-8")
+    ok("FAILED" in status_text(c, con, markdown=False) and "ANALYSIS FAILED" in rep and "Watchlist" in (c.report_dir / "REVIEW.md").read_text(encoding="utf-8"),
+       "a module that fails is named in spoor status, the BLUF limits and REVIEW.md")
+    # --- verifier (review #1 F-11, #2 G-F5/Q7, #3 SR-04)
+    from spoor.verify import FactBase, check_sentence
+    fb = FactBase([{"id": "F001", "title": "x", "statement": "5 accounts are linked: a1, a2, a3, a4, a5. The closest co-use: a1 and a2 on IP 203.0.113.9.",
+                    "values": {"accounts": ["a1", "a2", "a3", "a4", "a5"], "closest_ip": "203.0.113.9"},
+                    "tables": [{"rows": [["a1", "a2", 1, "203.0.113.9"], ["a3", "a4", 1, "198.51.100.4"]]}]},
+                   {"id": "F002", "title": "y", "statement": "Targets 7035550101 and 5715550102 were in direct contact: 6 records (4 calls, 2 texts).",
+                    "values": {"calls": 4, "texts": 2}}])
+    acc = {"a1", "a2", "a3", "a4", "a5"}
+    for t, want in [("a3 used IP 203.0.113.9 [F001].", "rejected"), ("a1 and a2 used IP 203.0.113.9 [F001].", "accepted"),
+                    ("a1 never used IP 203.0.113.9 [F001].", "rejected"), ("a3 changed the password from IP 198.51.100.4 [F001].", "rejected"),
+                    ("Targets 7035550101 and 5715550102 were in direct contact: 4 texts and 2 calls [F002].", "rejected"),
+                    ("Targets 7035550101 and 5715550102 were in direct contact: 4 calls and 2 texts [F002].", "accepted")]:
+        st, *_ = check_sentence(t, ["F001", "F002"], fb, acc)
+        ok(st == want, f"verifier {want}: {t}")
+
+
 def web_smoke():
     tmp = Path(tempfile.mkdtemp(prefix="spoor-web-"))
     os.environ["SPOOR_CASES"] = str(tmp / "cases")
@@ -140,10 +947,26 @@ def web_smoke():
 
 
 def main():
+    os.environ["SPOOR_CELLSITES"] = tempfile.mkdtemp(prefix="spoor-no-cellsites-")   # results must not depend on a library
     for name, fn in (("time parsing", unit_time), ("identifiers", unit_identifiers), ("verifier", unit_verify),
-                     ("markdown", unit_markdown)):
+                     ("markdown", unit_markdown), ("telecom units", unit_telecom)):
         print(f"\n[{name}]")
         fn()
+    print("\n[figures]")
+    figures_tests()
+    print("\n[telecom]")
+    telecom_isolation()
+    telecom_tests()
+    print("\n[carrier layouts]")
+    carrier_layout_tests()
+    print("\n[independent review regressions]")
+    review_regressions()
+    print("\n[contact chains]")
+    links_tests()
+    print("\n[returns, cross-reference, report]")
+    report_tests()
+    print("\n[reference cell-site library]")
+    cellref_tests()
     print("\n[self-test]")
     from spoor.selftest import selftest
     ok(selftest(), "built-in self-test")

@@ -75,12 +75,16 @@ class Links(Analysis):
                 vals.update({"closest_ip": ip, "closest": human_delta(d), "closest_seconds": round(d), "closest_a": aa,
                              "closest_ts_a": ta, "closest_b": ab, "closest_ts_b": tb, "closest_activity_records": act})
             mer = self._mermaid(comp, pairs)
+            ipl = sorted({ip for _, v in pairs for ip in v})
             self.add("account_cluster", f"{len(comp)} accounts linked by shared IPs", stmt,
                      {"values": vals, "mermaid": mer,
+                      "graph": {"accounts": comp[:2000], "ips": ipl[:5000], "ip_classes": classes, "max_accounts_per_ip": maxacc},
                       "tables": [{"title": "Account pairs", "columns": ["account_a", "account_b", "shared_ips", "ips", "closest_co_use", "on_ip", "co_use_records"],
                                   "rows": rows[: self.trows], "total_rows": len(rows)}]},
-                     sql="SELECT a.ip, a.account, b.account FROM ip_accounts a JOIN ip_accounts b ON a.ip=b.ip AND a.account<b.account "
-                         f"WHERE a.account IN ({', '.join(sq(x) for x in comp[:30])})",
+                     sql="SELECT a.ip, a.account AS account_a, b.account AS account_b, a.events AS records_a, b.events AS records_b "
+                         "FROM ip_accounts a JOIN ip_accounts b ON a.ip = b.ip AND a.account < b.account JOIN ip_summary s ON s.ip = a.ip "
+                         f"WHERE s.ip_class IN {classes} AND s.accounts BETWEEN 2 AND {maxacc} "
+                         f"AND a.account IN ({', '.join(sq(x) for x in comp[:200])}) ORDER BY a.ip, a.account, b.account",
                      evidence=ev[: self.nsamp * 2], priority=1, sort_key=f"1{999 - len(comp):03d}{comp[0]}")
 
     @staticmethod
@@ -110,6 +114,13 @@ class Links(Analysis):
     def shared_identifiers(self):
         rows = self.q("SELECT * FROM ident_summary WHERE kind NOT IN ('ipv4','ipv6','url') AND validity != 'bad_checksum' "
                       "AND (accounts >= 2 OR sources >= 2) ORDER BY accounts DESC, sources DESC, events DESC, norm")
+        has_tel = bool(self.one("SELECT 1 FROM tel LIMIT 1"))
+        if has_tel:
+            # numbers, IMEIs and IMSIs seen only in call/text records are reported under 'Calls, texts & cell sites';
+            # keep those that also appear in any other kind of record (a subscriber page, a login log...)
+            rows = [r for r in rows if r["kind"] not in ("phone", "imei", "imsi") or self.one(
+                "SELECT 1 FROM identifiers i WHERE i.kind=? AND i.norm=? AND i.event_id NOT IN (SELECT event_id FROM tel) LIMIT 1",
+                (r["kind"], r["norm"]))]
         for r in rows[: self.max]:
             per = self.q("SELECT e.account, i.source_id, COUNT(*) AS n, MIN(e.ts_utc) AS f, MAX(e.ts_utc) AS l "
                          "FROM identifiers i JOIN events e ON e.id=i.event_id WHERE i.kind=? AND i.norm=? "
@@ -117,7 +128,10 @@ class Links(Analysis):
             srcs = self.labels({p["source_id"] for p in per})
             accs = sorted({p["account"] for p in per if p["account"]})
             label = KIND_LABELS.get(r["kind"], r["kind"])
-            stmt = (f"{label[0].upper() + label[1:]} {r['norm']} appears in {plural(r['events'], 'record')} across {plural(r['sources'], 'source')} ({srcs})"
+            pv = self.prov.of_ident(r["kind"], r["norm"])
+            where_txt = (f"in {self.prov.phrase(pv)}, {plural(r['sources'], 'file')} ({srcs})" if self.multi
+                         else f"across {plural(r['sources'], 'source')} ({srcs})")
+            stmt = (f"{label[0].upper() + label[1:]} {r['norm']} appears in {plural(r['events'], 'record')} {where_txt}"
                     + (f" and in records of {plural(len(accs), 'account')}: {', '.join(accs[:10])}" if accs else "")
                     + (f"; {T(r['first_utc'])} to {T(r['last_utc'])}" if r["first_utc"] else "") + ".")
             ev = []
@@ -130,11 +144,13 @@ class Links(Analysis):
             prio = 1 if (len(accs) >= 2 or r["kind"] in ("btc", "eth", "ltc", "trx", "xmr", "doge", "phone", "email")) else 2
             self.add("shared_identifier", f"{label} {r['norm']}: {plural(r['sources'], 'source')}, {plural(len(accs), 'account')}", stmt,
                      {"values": {"kind": r["kind"], "value": r["norm"], "validity": r["validity"], "records": r["events"],
-                                 "sources": r["sources"], "source_labels": srcs, "accounts": accs[:20], "account_count": len(accs),
+                                 "sources": r["sources"], "source_labels": srcs, "returns": self.prov.labels(pv), "return_count": len(pv),
+                                 "accounts": accs[:20], "account_count": len(accs),
                                  "first_utc": r["first_utc"], "last_utc": r["last_utc"]},
                       "tables": [{"title": "Occurrences by source and account", "columns": ["source", "account", "records", "first_utc", "last_utc"],
                                   "rows": [[self.labels([p["source_id"]]), p["account"], p["n"], p["f"], p["l"]] for p in per[: self.trows]],
-                                  "total_rows": len(per)}]},
+                                  "total_rows": len(per)}] + ([{"title": "Returns", "columns": ["return", "name", "records", "first_utc", "last_utc"],
+                                                               "rows": [[x[0], self.prov.name(x[0]), x[1], x[2], x[3]] for x in pv]}] if self.multi else [])},
                      sql=f"SELECT kind, value, cite, ts_utc, account FROM ids WHERE kind='{r['kind']}' AND value={sq(r['norm'])} ORDER BY ts_utc",
                      evidence=ev, priority=prio, sort_key=f"2{9 - min(len(accs), 9)}{9 - min(r['sources'], 9)}{r['norm']}")
 

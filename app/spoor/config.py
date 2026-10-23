@@ -24,11 +24,34 @@ DEFAULT_PARAMS = {
     "link_include_nonpublic": False, # link accounts through private/CGNAT addresses too
     "coincidence_window_min": 60,    # two accounts on one IP within N minutes = co-use
     "subnet_min_ips": 3,             # subnets listed when they hold at least N distinct IPs
+    # telecom (call detail records, cell-site lists)
+    "tel_coloc_window_min": 15,      # two targets on the same / co-located cell site within N minutes
+    "tel_same_site_km": 0.1,         # cell sites this close are treated as one site (co-location, tower-list agreement)
+    "tel_top_contacts": 10,          # contacts listed per target
+    "tel_common_min_targets": 2,     # a contact shared by at least N targets is reported
+    "tel_path_max_hops": 6,          # contact chains between targets are searched up to N hops (calls/texts; 1 = direct contact)
+    "tel_hub_max": 25,               # a contact number with more than N different neighbours is not used as a link in a chain
+    "tel_link_sets": [],             # saved groups of numbers / tower dumps to link (set from the Links screen or `spoor links --save`)
+    "tel_scene_gap_hours": 3,        # tower-dump records more than N hours apart belong to different scenes
+    "tel_reference_library": True,   # look up cells the case's own lists miss in the cellsites/ library (if installed)
+    "tel_carrier": "",               # carrier of the case's returns (e.g. "Verizon"); blank = from each file's name
+    "kml_max_points": 20000,         # call records drawn in the KML (all of them are in the CSV export)
+    "kml_sector_km": 1.0,            # length of the drawn sector wedges (a drawing aid - NOT a coverage estimate)
+    "crossref_max_findings": 40,     # items present in several returns that get a finding of their own (all go to exports/crossref.csv)
     # output limits (the full data always goes to CSV exports)
     "max_findings_per_kind": 150,
     "evidence_samples": 12,
     "table_rows": 25,
     "timeline_md_max": 5000,
+    # figures (deterministic SVG in report/figures; any cap that applies is printed on the figure)
+    "figures": True,
+    "figure_timeline_max_accounts": 12,  # account lanes on the activity timeline
+    "figure_timeline_max_markers": 12,   # numbered priority-1 markers on the activity timeline
+    "figure_links_max_clusters": 3,      # linked groups (panels) on the link chart
+    "figure_links_max_accounts": 12,     # accounts per link-chart panel
+    "figure_links_max_ips": 16,          # shared IPs per link-chart panel
+    "figure_contacts_max_targets": 12,   # target numbers on the target-contact chart
+    "figure_contacts_max_contacts": 16,  # shared contacts / direct-contact pairs on the target-contact chart
     # pipeline
     "fts": True,
     "verify_hashes_at_end": True,

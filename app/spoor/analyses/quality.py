@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..findings import plural
+from ..findings import plural, agree
 from ..util import fmt_int
 from .base import T, Analysis
 
@@ -14,11 +14,14 @@ FLAG_TEXT = {
     "abbr_dst_mismatch": "carry a time-zone abbreviation that does not match daylight-saving status on that date",
     "implausible_year": "have a year before 1995 or in the future (excluded from timing analysis)",
     "two_digit_year": "use two-digit years",
-    "date_only": "have a date but no time of day (excluded from hour-of-day analysis)",
+    "date_only": "have a date but no time of day (excluded from hour-of-day analysis and from anything measured in minutes: bursts, co-use, network switches, co-location)",
+    "tz_conflict": "come from a file whose header, preamble or name names more than one timezone; converted with the one stated in the basis - VERIFY against the provider's cover letter",
+    "ambiguous_tz_abbr": "carry a timezone abbreviation that means different zones to different providers (CST, BST, AST); read with the US/UK meaning",
+    "date_order_assumed": "have a numeric date whose day/month order the file never proves (both numbers 12 or less); read as MM/DD and EXCLUDED from all timing analysis - set the order for this source to use them",
     "paired_by_proximity": "were assembled by pairing an IP line with a nearby timestamp line",
 }
 FLAG_PRIORITY = {"ambiguous_dst": 1, "nonexistent_local_time": 1, "abbr_dst_mismatch": 1, "implausible_year": 2,
-                 "two_digit_year": 2, "date_only": 3, "paired_by_proximity": 1}
+                 "two_digit_year": 2, "date_only": 3, "date_order_assumed": 1, "tz_conflict": 1, "ambiguous_tz_abbr": 1, "paired_by_proximity": 1}
 
 
 class Quality(Analysis):
@@ -26,7 +29,15 @@ class Quality(Analysis):
     category = "Sources & data quality"
 
     def run(self):
-        srcs = self.q("SELECT * FROM sources ORDER BY id")
+        for r in self.q("SELECT * FROM returns WHERE state != 'active' ORDER BY id"):
+            n = self.one("SELECT COUNT(*) FROM sources WHERE return_id=? AND status != 'container'", (r["id"],)) or 0
+            word = "excluded from" if r["state"] == "excluded" else "removed from"
+            self.add("return_excluded", f"{r['label']} {word} this analysis",
+                     f"{r['label']} ({r['name']}), {plural(n, 'file')}, was {word} this analysis by the analyst on {r['state_at']}. "
+                     f"None of its records are in any finding, table, figure or count in this report; the files were not changed.",
+                     {"values": {"return": r["label"], "name": r["name"], "state": r["state"], "files": n, "at": r["state_at"],
+                                 "reason": r["note"] or ""}}, priority=2, sort_key=f"0{r['label']}")
+        srcs = self.q("SELECT * FROM sources WHERE status != 'excluded' ORDER BY id")
         for s in srcs:
             cfg = json.loads(s["config"]) if s.get("config") else {}
             st = json.loads(s["stats"]) if s.get("stats") else {}
@@ -72,10 +83,10 @@ class Quality(Analysis):
             if tsn and not n_zone:
                 stmt += " Every parsed timestamp carries its own UTC offset or is an epoch value, so no timezone assumption applies."
             elif n_zone and cfg.get("tz_assumed"):
-                stmt += (f" {plural(n_zone, 'timestamp')} have no offset of their own and were treated as {tz_txt}: "
+                stmt += (f" {plural(n_zone, 'timestamp')} {agree(n_zone, 'have')} no offset of {'its' if n_zone == 1 else 'their'} own and were treated as {tz_txt}: "
                          "no timezone indicator was found (ASSUMPTION - verify with the provider).")
             elif n_zone:
-                stmt += f" {plural(n_zone, 'timestamp')} have no offset of their own and were read as {tz_txt} (basis: {cfg.get('tz_basis')})."
+                stmt += f" {plural(n_zone, 'timestamp')} {agree(n_zone, 'have')} no offset of {'its' if n_zone == 1 else 'their'} own and were read as {tz_txt} (basis: {cfg.get('tz_basis')})."
             if cfg.get("default_account"):
                 vals["default_account"] = cfg["default_account"]
                 vals["default_account_basis"] = cfg.get("default_account_basis")
@@ -135,7 +146,7 @@ class Quality(Analysis):
                 if not n or fl not in FLAG_TEXT:
                     continue
                 self.add(f"flag_{fl}", f"{lab}: {plural(n, 'timestamp')} flagged {fl}",
-                         f"{lab} ({name}): {plural(n, 'record')} {FLAG_TEXT[fl]}.",
+                         f"{lab} ({name}): {plural(n, 'record')} {agree(n, FLAG_TEXT[fl])}.",
                          {"values": {"source": lab, "flag": fl, "count": n}},
                          sql=f"SELECT cite, ts_raw, ts_utc, ts_flag FROM ev WHERE source='{lab}' AND ts_flag LIKE '%{fl}%'",
                          evidence=self.sample("source_id=? AND ts_flag LIKE ?", (s["id"], f"%{fl}%"), 6),

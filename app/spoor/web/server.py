@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 import string
 import threading
 import time
@@ -159,6 +160,8 @@ def api_case(h, q, body, slug):
             "findings": dbm.one(con, "SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL"),
             "p1": dbm.one(con, "SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL AND priority=1"),
             "asks": dbm.one(con, "SELECT COUNT(*) FROM asks"),
+            "returns": dbm.one(con, "SELECT COUNT(*) FROM returns WHERE state='active'"),
+            "returns_all": dbm.one(con, "SELECT COUNT(*) FROM returns WHERE state != 'removed'"),
         }
         span = con.execute("SELECT MIN(ts_utc), MAX(ts_utc) FROM events WHERE ts_epoch IS NOT NULL AND "
                            "(ts_flag IS NULL OR ts_flag NOT LIKE '%implausible_year%')").fetchone()
@@ -167,6 +170,8 @@ def api_case(h, q, body, slug):
         return {"slug": c.slug, "info": c.info, "params": c.params, "counts": counts, "span": list(span) if span else None,
                 "key_findings": key, "jobs": jobs, "status_text": status_text(c, con, False),
                 "citation_check": dbm.get_meta(con, "citation_check"), "narrative": dbm.get_meta(con, "narrative"),
+                "returns_changed": dbm.get_meta(con, "returns_changed"),
+                "analysis_errors": dbm.analysis_errors(con),
                 "report_ready": (c.report_dir / "REPORT.md").exists(), "case_dir": str(c.dir), "report_dir": str(c.report_dir)}
     finally:
         con.close()
@@ -192,21 +197,70 @@ def api_case_settings(h, q, body, slug):
     return {"ok": True, "params": c.params}
 
 
+@route("GET", r"/api/case/([^/]+)/returns")
+def api_returns(h, q, body, slug):
+    from .. import returns as rets
+    from ..jobs import active_job
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        rows = rets.return_rows(con)
+        for r in rows:
+            r["files"] = [{"label": f["label"], "name": f["member"] or Path(f["path"]).name, "status": f["status"], "rows": f["rows"], "kind": f["kind"]}
+                          for f in r["files"]]
+        return {"returns": rows, "changed": dbm.get_meta(con, "returns_changed"),
+                "running": bool(active_job(con, "run"))}
+    finally:
+        con.close()
+
+
+@route("POST", r"/api/case/([^/]+)/returns")
+def api_returns_change(h, q, body, slug):
+    """action: exclude | include | remove | restore | rename | move  (see returns.py). Takes effect on the next run."""
+    from .. import returns as rets
+    from ..jobs import active_job
+    c = _case(slug)
+    con = c.db()
+    try:
+        if active_job(con, "run"):
+            raise ApiError("An analysis is running for this case. Stop it, or wait until it finishes, before changing the returns.", 409)
+        act = body.get("action")
+        try:
+            if act in ("exclude", "include", "remove", "restore"):
+                st = {"exclude": "excluded", "include": "active", "restore": "active", "remove": "removed"}[act]
+                for ref in (body.get("refs") or [body.get("ref")]):
+                    rets.set_state(con, c, ref, st, (body.get("reason") or "").strip())
+            elif act == "rename":
+                rets.rename(con, c, body.get("ref"), body.get("name"), body.get("note"))
+            elif act == "move":
+                rets.move_source(con, c, body.get("source"), body.get("to") or None, body.get("name") or "")
+            else:
+                raise ApiError("unknown action")
+        except ValueError as e:
+            raise ApiError(str(e)) from e
+        return {"ok": True, "changed": dbm.get_meta(con, "returns_changed"),
+                "note": "Saved. Run the analysis again for the change to take effect; nothing in the current report has changed yet."}
+    finally:
+        con.close()
+
+
 @route("GET", r"/api/case/([^/]+)/sources")
 def api_sources(h, q, body, slug):
     c = _case(slug)
     con = c.db(readonly=True)
     try:
         out = []
+        rmap = {r[0]: r[1] for r in con.execute("SELECT id, label FROM returns")}
         for s in source_rows(con):
             cfg = s["config"] or {}
             st = s["stats"] or {}
+            s["ret"] = rmap.get(s.get("return_id"))
             out.append({"label": s["label"], "name": s["name"], "display": s["display"], "kind": s["kind"], "size": s["size"],
                         "status": s["status"], "rows": s["rows"], "error": s["error"], "sha256": s["sha256"],
                         "tz": cfg.get("tz"), "tz_assumed": cfg.get("tz_assumed"), "default_account": cfg.get("default_account"),
                         "skip": cfg.get("skip"), "ts_failed": st.get("ts_failed", 0),
                         "flags": st.get("flags") or {}, "changed": s["status"] == "ingested" and s["ingested_rev"] != s["config_rev"],
-                        "parent": s["parent_id"]})
+                        "parent": s["parent_id"], "ret": s["ret"]})
         return {"sources": out}
     finally:
         con.close()
@@ -319,6 +373,8 @@ def api_run(h, q, body, slug):
     try:
         from ..jobs import start_job
         params = {"llm": bool(body.get("llm", True))}
+        if body.get("figures") is not None:
+            params["figures"] = bool(body["figures"])
         if body.get("accounts") is not None:
             params["accounts"] = int(body["accounts"])
         try:
@@ -408,6 +464,7 @@ def api_finding(h, q, body, slug, fid):
         f["cites"] = dbm.rows(con, "SELECT cite, text FROM finding_cites WHERE finding_id=?", (f["id"],))
         f["checks"] = dbm.rows(con, "SELECT cite, status, detail FROM citation_checks WHERE event_id IN "
                                     "(SELECT event_id FROM finding_evidence WHERE finding_id=?)", (f["id"],))
+        f["sql_failure"] = next((x[1] for x in (dbm.get_meta(con, "sql_failures") or []) if x[0] == f["fid"]), None)
         return f
     finally:
         con.close()
@@ -499,15 +556,89 @@ def api_ask_get(h, q, body, slug, aid):
 @route("GET", r"/api/case/([^/]+)/reports")
 def api_reports(h, q, body, slug):
     c = _case(slug)
-    order = ["REPORT.md", "REVIEW.md", "FINDINGS.md", "EVIDENCE.md", "SOURCES.md", "TIMELINE.md", "METHODS.md", "CITATION_CHECK.md"]
+    order = ["REPORT.md", "CROSSREF.md", "FIGURES.md", "REVIEW.md", "FINDINGS.md", "EVIDENCE.md", "SOURCES.md", "TIMELINE.md", "METHODS.md", "CITATION_CHECK.md"]
     files = []
     if c.report_dir.exists():
         for p in sorted(c.report_dir.rglob("*.md")):
             rel = p.relative_to(c.report_dir).as_posix()
             files.append({"file": rel, "size": p.stat().st_size, "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime))})
     files.sort(key=lambda f: (order.index(f["file"]) if f["file"] in order else 99, f["file"]))
-    exports = sorted(p.relative_to(c.report_dir).as_posix() for p in (c.report_dir / "exports").glob("*.csv")) if (c.report_dir / "exports").exists() else []
+    exports = sorted(p.relative_to(c.report_dir).as_posix() for p in (c.report_dir / "exports").glob("*") if p.suffix.lower() in (".csv", ".kml", ".geojson")) if (c.report_dir / "exports").exists() else []
     return {"files": files, "exports": exports, "progress_md": (c.dir / "PROGRESS.md").exists()}
+
+
+@route("GET", r"/api/case/([^/]+)/map")
+def api_map(h, q, body, slug):
+    from ..mapdata import map_data
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        return map_data(con, c.params)
+    finally:
+        con.close()
+
+
+@route("GET", r"/api/case/([^/]+)/links")
+def api_links_choices(h, q, body, slug):
+    from ..contactgraph import Graph
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        if not (dbm.one(con, "SELECT COUNT(*) FROM tel") or 0):
+            return {"telecom": False}
+        g = Graph(con, c.params, dumps=True)
+        return {"telecom": True, **g.choices(), "sets": c.params.get("tel_link_sets") or [], "max_hops": c.params.get("tel_path_max_hops", 6)}
+    finally:
+        con.close()
+
+
+@route("POST", r"/api/case/([^/]+)/links")
+def api_links(h, q, body, slug):
+    """{seeds: [number | dump:... | imei:...], max_hops, slack, devices} -> chains between every pair, with citations."""
+    from ..contactgraph import Graph
+    c = _case(slug)
+    con = c.db(readonly=True)
+    try:
+        g = Graph(con, c.params, dumps=True, devices=bool(body.get("devices")))
+        asked = [str(x) for x in (body.get("seeds") or [])][:40]
+        seeds, missing = [], []
+        for x in asked:
+            n = g.find(x)
+            (seeds.append(n) if n else missing.append(x))
+        seeds = list(dict.fromkeys(seeds))
+        if len(seeds) < 2:
+            raise ApiError("Choose at least two numbers or tower dumps that are in the records." + (f" Not found: {', '.join(missing)}." if missing else ""), 400)
+        hops = max(1, min(10, int(body.get("max_hops") or 6)))
+        slack = max(0, min(2, int(body.get("slack") or 0)))
+        res = g.result_json(g.connect(seeds, hops, slack, int(body.get("max_paths") or 25), ordered_only=bool(body.get("ordered_only"))))
+        res["missing"] = missing
+        res["hub_max"] = g.hub_max
+        return res
+    finally:
+        con.close()
+
+
+@route("POST", r"/api/case/([^/]+)/links/save")
+def api_links_save(h, q, body, slug):
+    """Save (or with delete=true, remove) a named link group; it is reported on the next run."""
+    c = _case(slug)
+    name = str(body.get("name") or "").strip()[:80]
+    if not name:
+        raise ApiError("Give the group a name.", 400)
+    cur = dict(c.info.get("params") or {})
+    sets = [s for s in (cur.get("tel_link_sets") or []) if s.get("name") != name]
+    if not body.get("delete"):
+        members = [str(m) for m in (body.get("members") or [])][:40]
+        if len(members) < 2:
+            raise ApiError("A link group needs at least two members.", 400)
+        sets.append({"name": name, "members": members, "max_hops": int(body.get("max_hops") or 6), "slack": int(body.get("slack") or 0)})
+    cur["tel_link_sets"] = sets
+    c.info["params"] = cur
+    c.save()
+    con = c.db()
+    c.audit(con, "link_group_" + ("deleted" if body.get("delete") else "saved"), {"name": name, "members": body.get("members")})
+    con.close()
+    return {"ok": True, "sets": sets}
 
 
 @route("GET", r"/api/case/([^/]+)/report")
@@ -583,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-                                                    "script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+                                                    "font-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -670,6 +801,8 @@ class Handler(BaseHTTPRequestHandler):
             ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
             if p.suffix.lower() in (".md", ".csv", ".sha256", ".txt"):
                 ctype = "text/plain; charset=utf-8"
+            elif p.suffix.lower() == ".svg":          # the Windows registry may not know .svg
+                ctype = "image/svg+xml"
             extra = {"Content-Disposition": f'attachment; filename="{p.name}"'} if p.suffix.lower() == ".csv" else None
             self._send(200, p.read_bytes(), ctype, extra)
             return
@@ -685,17 +818,42 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
 
+class _Server(ThreadingHTTPServer):
+    """On Windows SO_REUSEADDR lets a second program bind a port that is already listening, so two Spoor windows (or
+    an old and a new version) could share 8765 and the browser would reach the wrong one ('This link is from an
+    earlier session'). Ask for the port exclusively instead."""
+    allow_reuse_address = not IS_WINDOWS
+
+    def server_bind(self):
+        if IS_WINDOWS and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _port_in_use(p: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", p), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
 def serve(port: int | None = None, open_browser: bool = True) -> None:
     global PORT
     s = load_settings()
     PORT = int(port or s.get("port") or 8765)
     srv = None
+    busy = []
     for p in range(PORT, PORT + 20):
+        if _port_in_use(p):          # another Spoor (any version) or another program is already answering there
+            busy.append(p)
+            continue
         try:
-            srv = ThreadingHTTPServer(("127.0.0.1", p), Handler)
+            srv = _Server(("127.0.0.1", p), Handler)
             PORT = p
             break
         except OSError:
+            busy.append(p)
             continue
     if srv is None:
         raise SystemExit("No free port between %d and %d" % (PORT, PORT + 19))
@@ -705,6 +863,9 @@ def serve(port: int | None = None, open_browser: bool = True) -> None:
     print(f"\n{bar}\n  Spoor {__version__} - offline subpoena-return analysis\n{bar}")
     print(f"  Dashboard:  {url}")
     print(f"  Cases:      {s['cases_dir']}")
+    if busy:
+        print(f"  Port {busy[0]} is already in use (another Spoor window, possibly an older version?) - this one is on {PORT}.")
+        print("  Use the link above; links printed by other windows belong to those windows.")
     print("  Keep this window open while you use the dashboard. Closing it does NOT")
     print("  stop analyses that are running - they continue in the background.")
     print(f"{bar}\n")

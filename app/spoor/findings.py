@@ -17,13 +17,16 @@ CATEGORY_ORDER = [
     "Logins & account security",
     "Timing & activity patterns",
     "Links & cross-source",
+    "Cross-return overlap",
+    "Calls, texts & cell sites",
     "Identifiers",
     "Counterparties & transactions",
     "Watchlist hits",
 ]
 CATEGORY_SLUG = {
     "Sources & data quality": "quality", "IP addresses": "ip", "Logins & account security": "logins",
-    "Timing & activity patterns": "temporal", "Links & cross-source": "links", "Identifiers": "identifiers",
+    "Timing & activity patterns": "temporal", "Links & cross-source": "links", "Cross-return overlap": "crossref",
+    "Calls, texts & cell sites": "telecom", "Identifiers": "identifiers",
     "Counterparties & transactions": "counterparties", "Watchlist hits": "watchlist",
 }
 
@@ -34,6 +37,18 @@ def ts_label(ts: Optional[str]) -> str:
 
 def plural(n: int, word: str, plural_word: Optional[str] = None) -> str:
     return f"{fmt_int(n)} {word if n == 1 else (plural_word or word + 's')}"
+
+
+_SING = {"have": "has", "are": "is", "were": "was", "do": "does", "fall": "falls", "carry": "carries", "come": "comes",
+         "use": "uses", "appear": "appears", "need": "needs", "match": "matches", "share": "shares"}
+
+
+def agree(n: int, phrase: str) -> str:
+    """Make a verb phrase written for the plural agree with n: agree(1, 'have no offset') -> 'has no offset'."""
+    if n != 1:
+        return phrase
+    head, sep, rest = phrase.partition(" ")
+    return _SING.get(head, head) + sep + rest
 
 
 class FindingWriter:
@@ -117,9 +132,10 @@ def cite_of(con, event_id: int) -> str:
     return r[0] if r else "?"
 
 
-def labels_for(con, source_ids: Iterable[int]) -> str:
+def labels_for(con, source_ids: Iterable[int], with_returns: bool = False) -> str:
     ids = sorted(set(int(i) for i in source_ids))
     if not ids:
         return ""
-    m = {r[0]: r[1] for r in con.execute(f"SELECT id, label FROM sources WHERE id IN ({','.join('?' * len(ids))})", ids)}
+    m = {r[0]: (f"{r[1]} ({r[2]})" if with_returns and r[2] else r[1]) for r in con.execute(
+        f"SELECT s.id, s.label, r.label FROM sources s LEFT JOIN returns r ON r.id=s.return_id WHERE s.id IN ({','.join('?' * len(ids))})", ids)}
     return ", ".join(m.get(i, str(i)) for i in ids)

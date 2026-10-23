@@ -21,6 +21,15 @@ def _case(name):
         raise SystemExit(f"No case '{name}'. Cases: {', '.join(c['slug'] for c in list_cases()) or 'none'}")
 
 
+def dbm_changed(con) -> bool:
+    from . import db as dbm
+    return bool(dbm.get_meta(con, "returns_changed"))
+
+
+def dbm_findings(con) -> int:
+    return con.execute("SELECT COUNT(*) FROM findings WHERE fid IS NOT NULL").fetchone()[0]
+
+
 def _utf8_streams() -> None:
     """Console and redirected logs in UTF-8, so Cyrillic or other non-Latin text never breaks output."""
     for st in (sys.stdout, sys.stderr):
@@ -47,9 +56,30 @@ def main(argv=None):
     s.add_argument("path")
     s.add_argument("--no-recursive", action="store_true")
     s.add_argument("--zip-password", default="")
+    s = sub.add_parser("returns", help="list the returns in a case, or leave one out / put it back / rename it / move a file")
+    s.add_argument("case")
+    s.add_argument("action", nargs="?", default="list",
+                   choices=["list", "exclude", "include", "remove", "restore", "rename", "move"],
+                   help="exclude R03: leave it out of the next run (reversible); include R03: put it back; remove: hide it too; "
+                        "rename R03 \"New name\"; move S05 R02 (or: move S05 new)")
+    s.add_argument("value", nargs="?", help="a return (R03) or, for move, a file label (S05)")
+    s.add_argument("extra", nargs="?", help="rename: the new name; move: the target return (or: new)")
+    s.add_argument("--reason", default="", help="why (kept in the audit log and the report)")
+    s.add_argument("--run", action="store_true", help="re-run the analysis straight away (in this window)")
+    s.add_argument("--no-llm", action="store_true")
+    s = sub.add_parser("links", help="telecom: chains of contacts linking two or more numbers (or tower dumps)")
+    s.add_argument("case")
+    s.add_argument("members", nargs="*", help="numbers in any format, 'dump:S08' for a tower dump, 'imei:...' with --devices; "
+                                               "none: list what can be chosen")
+    s.add_argument("--hops", type=int, default=6, help="longest chain searched (default 6)")
+    s.add_argument("--slack", type=int, default=0, help="also list chains up to N hops longer than the shortest")
+    s.add_argument("--devices", action="store_true", help="also link numbers that used the same handset (IMEI)")
+    s.add_argument("--save", metavar="NAME", help="save the group; it is reported (with citations) on every run")
+    s.add_argument("--delete", metavar="NAME", help="delete a saved group")
     s = sub.add_parser("run", help="run (or resume) the full analysis in the background")
     s.add_argument("case")
     s.add_argument("--no-llm", action="store_true", help="skip the AI-drafted summary")
+    s.add_argument("--no-figures", action="store_true", help="skip the figures")
     s.add_argument("--accounts", type=int, default=None, help="AI profiles for the N busiest accounts")
     s.add_argument("--wait", action="store_true", help="run in this window instead of in the background")
     s = sub.add_parser("status", help="show progress")
@@ -58,6 +88,8 @@ def main(argv=None):
     s = sub.add_parser("cancel", help="stop the running job (it can be resumed)")
     s.add_argument("case")
     s = sub.add_parser("report", help="rewrite the Markdown report from the current results")
+    s.add_argument("case")
+    s = sub.add_parser("figures", help="redraw the figures from the current results (and rewrite the report)")
     s.add_argument("case")
     s = sub.add_parser("ask", help="ask a question (local model writes read-only SQL)")
     s.add_argument("case")
@@ -77,6 +109,11 @@ def main(argv=None):
     s.add_argument("--job", type=int, required=True)
     sub.add_parser("llm", help="check the local model server")
     sub.add_parser("selftest", help="run the built-in end-to-end test on fictional data")
+    s = sub.add_parser("cellsites", help="index or query your reference cell-site lists (the cellsites/ folder)")
+    s.add_argument("action", choices=["index", "status", "lookup"], nargs="?", default="status")
+    s.add_argument("value", nargs="?", help="lookup: an ECI in any spelling (decimal, ECGI, MCC-MNC-eNB-cell)")
+    s.add_argument("--dir", help="library folder (default: cellsites/ next to the program)")
+    s.add_argument("--rebuild", action="store_true", help="index: re-read every list")
     s = sub.add_parser("demo", help="create a case from the bundled fictional demo returns")
     s.add_argument("--run", action="store_true")
     a = ap.parse_args(argv)
@@ -105,11 +142,100 @@ def main(argv=None):
             print(f"{x['label']}  {x['kind']:8} {x['path']}")
         for p, why in r["skipped"]:
             print(f"skipped {p}: {why}")
+    elif cmd == "returns":
+        from . import returns as rets
+        c = _case(a.case)
+        con = c.db()
+        try:
+            if a.action in ("exclude", "include", "remove", "restore"):
+                if not a.value:
+                    raise SystemExit("Say which return, e.g.: spoor returns CASE exclude R03")
+                st = {"exclude": "excluded", "include": "active", "restore": "active", "remove": "removed"}[a.action]
+                r = rets.set_state(con, c, a.value, st, a.reason)
+                print(f"{r['label']} {r['name']}: {r['state']}")
+            elif a.action == "rename":
+                if not (a.value and a.extra):
+                    raise SystemExit('Usage: spoor returns CASE rename R03 "New name"')
+                rets.rename(con, c, a.value, a.extra)
+                print("renamed")
+            elif a.action == "move":
+                if not (a.value and a.extra):
+                    raise SystemExit("Usage: spoor returns CASE move S05 R02   (or: move S05 new)")
+                r = rets.move_source(con, c, a.value, None if a.extra.lower() == "new" else a.extra)
+                print(f"{a.value} is now in {r['label']} {r['name']}")
+        except ValueError as e:
+            raise SystemExit(str(e))
+        if a.action == "list" or a.action in ("exclude", "include", "remove", "restore", "rename", "move"):
+            for r in rets.return_rows(con):
+                span = f"{(r['first_utc'] or '')[:10]} to {(r['last_utc'] or '')[:10]}" if r["first_utc"] else ""
+                print(f"{r['label']}  {r['state']:9} {r['name']:32} {len(r['files']):3} file(s) {r['records']:>9,} records  {span}  [{', '.join(r['labels'][:8])}{' ...' if len(r['labels']) > 8 else ''}]")
+            if dbm_changed(con):
+                print("\nThe return set has changed since the last analysis - run it again: spoor run \"" + c.slug + "\"")
+        if a.run:
+            from .jobs import start_job, status_text
+            start_job(c, con, "run", {"llm": not a.no_llm}, wait=True)
+            print(status_text(c, c.db(), markdown=False))
+    elif cmd == "links":
+        from .contactgraph import Graph, node_label, path_text
+        c = _case(a.case)
+        if a.delete:
+            cur = dict(c.info.get("params") or {})
+            cur["tel_link_sets"] = [s for s in (cur.get("tel_link_sets") or []) if s.get("name") != a.delete]
+            c.info["params"] = cur
+            c.save()
+            print(f"deleted link group '{a.delete}'")
+            return
+        con = c.db(readonly=True)
+        g = Graph(con, c.params, dumps=True, devices=a.devices)
+        if len(a.members) < 2:
+            ch = g.choices()
+            print("Targets (numbers whose call records are in the case):")
+            for t in ch["targets"]:
+                print(f"  {t['id']:16} {t['contacts']:5} contacts {t['records']:7} records")
+            for d in ch["dumps"]:
+                print(f"  {d['id']:16} tower dump {d['label']} ({d['phones']} phones)")
+            for s_ in c.params.get("tel_link_sets") or []:
+                print(f"  saved group '{s_['name']}': {', '.join(s_['members'])}")
+            print(f"\n{ch['numbers']} numbers in all. Usage: spoor links \"{c.slug}\" NUMBER NUMBER [dump:S08 ...] [--hops 6]")
+            return
+        seeds, missing = [], []
+        for x in a.members:
+            n = g.find(x)
+            (seeds.append(n) if n else missing.append(x))
+        if missing:
+            print("not in the records: " + ", ".join(missing))
+        res = g.connect(list(dict.fromkeys(seeds)), a.hops, a.slack, 25)
+        cites = g.cites([x for k in res["edges"] for x in (g.edges[k]["first_id"], g.edges[k]["last_id"])])
+        for pr in res["pairs"]:
+            head = f"{node_label(pr['a'])}  <->  {node_label(pr['b'])}: "
+            if pr["hops"] is None:
+                print(head + f"not linked within {a.hops} hops")
+                continue
+            print(head + f"{pr['hops']} hop{'s' if pr['hops'] != 1 else ''}, {len(pr['paths'])} chain{'s' if len(pr['paths']) != 1 else ''}"
+                  + (" (more not listed)" if pr["more"] else ""))
+            for p_ in pr["paths"]:
+                print("    " + path_text(g, p_, cites))
+        if res["through"]:
+            print("\nNumbers on the chains (pairs linked through each):")
+            for n, v in sorted(res["through"].items(), key=lambda kv: (-len(kv[1]["pairs"]), -kv[1]["paths"], kv[0]))[:20]:
+                print(f"  {node_label(n):18} {len(v['pairs'])} pair(s), {v['paths']} chain(s)")
+        if res["left_out"]:
+            print("\nNot used as links: " + "; ".join(f"{x['node']} ({x['reason']})" for x in res["left_out"][:15]))
+        if a.save:
+            cur = dict(c.info.get("params") or {})
+            sets = [s_ for s_ in (cur.get("tel_link_sets") or []) if s_.get("name") != a.save]
+            sets.append({"name": a.save, "members": seeds, "max_hops": a.hops, "slack": a.slack})
+            cur["tel_link_sets"] = sets
+            c.info["params"] = cur
+            c.save()
+            print(f"\nsaved as link group '{a.save}' - it is reported on the next run")
     elif cmd == "run":
         from .jobs import start_job
         c = _case(a.case)
         con = c.db()
         params = {"llm": not a.no_llm}
+        if a.no_figures:
+            params["figures"] = False
         if a.accounts is not None:
             params["accounts"] = a.accounts
         jid = start_job(c, con, "run", params, wait=a.wait)
@@ -145,6 +271,20 @@ def main(argv=None):
         c = _case(a.case)
         files = write_reports(c, c.db())
         print(f"wrote {len(files)} files to {c.report_dir}")
+    elif cmd == "figures":
+        from .jobs import active_job, draw_figures
+        from .report import write_reports
+        from .util import get_logger
+        c = _case(a.case)
+        con = c.db()
+        if active_job(con, "run"):
+            raise SystemExit("An analysis is running for this case; it draws the figures itself.")
+        if not dbm_findings(con):
+            raise SystemExit("No findings yet - run the analysis first.")
+        r = draw_figures(c, con, None, get_logger(c.dir))
+        write_reports(c, con)
+        c.audit(con, "figures_redrawn", r)
+        print(f"figures: {r}; written to {c.report_dir / 'figures'} and {c.report_dir / 'FIGURES.md'}")
     elif cmd == "ask":
         from .jobs import start_job
         from .util import utc_now_str
@@ -171,6 +311,34 @@ def main(argv=None):
     elif cmd == "selftest":
         from .selftest import selftest
         sys.exit(0 if selftest() else 1)
+    elif cmd == "cellsites":
+        from . import cellref
+        folder = Path(a.dir).resolve() if a.dir else None
+        if a.action == "index":
+            r = cellref.index(folder, force=a.rebuild)
+            print(f"indexed: {r['lists']} lists, {r['cells']:,} cells")
+            for k, v in sorted(r["carriers"].items()):
+                print(f"  {k:28} {v['lists']:4} lists {v['cells']:>12,} cells")
+        elif a.action == "status":
+            r = cellref.status(folder)
+            if not r["indexed"]:
+                print(f"no index - put carrier cell-site lists in {folder or cellref.library_dir()} and run: spoor cellsites index")
+            else:
+                print(f"{r['path']}: {r['lists']} lists, {r['cells']:,} cells")
+                for k, v in sorted(r["carriers"].items()):
+                    print(f"  {k:28} {v['lists']:4} lists {v['cells']:>12,} cells")
+        else:
+            from .telecom import parse_eci
+            eci, form = parse_eci(a.value)
+            if eci is None:
+                sys.exit(f"'{a.value}' is not an LTE cell identity")
+            lib = cellref.Library(folder)
+            if not lib.available:
+                sys.exit("no index - run: spoor cellsites index")
+            print(f"ECI {eci} (eNodeB {eci // 256}, cell {eci % 256}; read as {form})")
+            for c in lib.by_eci(eci):
+                print(f"  {c['carrier']:24} {c['lat']:.6f},{c['lon']:.6f} az {c['azimuth']} bw {c['beamwidth']}  "
+                      f"{c['site'] or ''}  [{c['file']} {c['loc']}]")
     elif cmd == "demo":
         from .selftest import make_demo_case
         c = make_demo_case(run=a.run)

@@ -38,8 +38,8 @@ def scan(path, name: str) -> dict:
     n = len(r.pages)
     out = {"kind": "pdf", "encoding": None, "tables": [], "preamble": [], "notes": [], "pages": n}
     samples, empty = [], []
-    from .textmode import analyse_line
-    ip_only = ts_only = both = 0
+    from .textmode import KEY_INLINE, analyse_line
+    ip_only = ts_only = both = kv_ip = kv_ts = 0
     for i in range(min(n, 15)):
         lines = page_lines(r.pages[i])
         if not any(l.strip() for l in lines):
@@ -54,10 +54,13 @@ def scan(path, name: str) -> dict:
                 both += 1
             elif a.ips:
                 ip_only += 1
+                kv_ip += bool(KEY_INLINE.match(l))
             elif a.ts:
                 ts_only += 1
+                kv_ts += bool(KEY_INLINE.match(l))
     pair = ip_only >= 3 and ts_only >= 3 and both < ip_only
-    out["tables"].append({"name": "text", "mode": "text", "pair_window": 6 if pair else 0, "headers": ["line"],
+    kv_pair = kv_ip >= 1 and kv_ts >= 1      # 'Time: ...' / 'IP Address: ...' records: pair inside each record
+    out["tables"].append({"name": "text", "mode": "text", "pair_window": 6 if pair else (1 if kv_pair else 0), "headers": ["line"],
                           "samples": samples, "rows_estimate": n})
     out["notes"].append(f"PDF, {n:,} page(s); text read page by page"
                         + (f"; first pages without text: {empty[:10]}" if empty else "")

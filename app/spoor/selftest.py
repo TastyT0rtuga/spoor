@@ -3,7 +3,7 @@ folder, with a stand-in model, and checks the results that were planted in the d
 
 Run it after installing on a new machine: `spoor selftest` (or SELFTEST.bat). It proves that
 Python, SQLite, every file reader, the timezone database, the offline ASN data, the analyses,
-the citation check and the sentence verifier all work on this computer."""
+the figures, the citation check and the sentence verifier all work on this computer."""
 from __future__ import annotations
 
 import json
@@ -27,6 +27,101 @@ def demo_returns_dir() -> Path:
 
 DEMO_WATCHLIST = ("value,label,note\n159.89.0.0/16,DigitalOcean range (demo),fictional demo entry\n"
                   "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq,BTC address from a tip (demo),fictional demo entry\n")
+
+
+def demo_telecom_dir():
+    p = app_root() / "demo" / "telecom"
+    return p if p.exists() else None
+
+
+def telecom_checks(check) -> None:
+    """Telecom returns: three fictional carriers, four targets, planted cross-references."""
+    folder = demo_telecom_dir()
+    if folder is None:
+        check(False, "telecom demo returns present (demo/telecom)")
+        return
+    import xml.etree.ElementTree as ET
+    from . import db as dbm
+    from .case import create_case, register_path
+    from .figures import figure_rows
+    from .jobs import start_job
+    from .figures.svg import check_svg
+    c = create_case("Self-test telecom", "selftest", "", "America/New_York")
+    con = c.db()
+    register_path(c, con, str(folder))
+    print("\nRunning the full pipeline on the telecom demo returns…")
+    jid = start_job(c, con, "run", {"llm": False}, wait=True)
+    con = c.db()
+    job = dbm.rows(con, "SELECT status, error FROM jobs WHERE id=?", (jid,))[0]
+    check(job["status"] == "done", "telecom pipeline finished" + ("" if job["status"] == "done" else ": " + str(job["error"])))
+    targets = {r[0] for r in con.execute("SELECT DISTINCT target FROM tel WHERE target IS NOT NULL")}
+    check(targets == {"+17035550101", "+15715550102", "+12025550103", "+12405550104"},
+          f"four target numbers read from three carriers' layouts ({len(targets)} found)")
+    n, loc = con.execute("SELECT COUNT(*), SUM(lat IS NOT NULL) FROM tel").fetchone()
+    check(n and n == loc, f"every call record placed at its cell site ({loc} of {n}; tower lists and inline coordinates)")
+
+    def finding(kind, like=""):
+        return dbm.rows(con, "SELECT fid, statement, facts FROM findings WHERE kind=? AND statement LIKE ?", (kind, f"%{like}%"))
+
+    f = finding("telecom_common", "+17035550150 is in contact with 3 targets")
+    check(bool(f), "contact shared by three targets found (N-way cross-reference)")
+    check(bool(finding("telecom_direct", "+15715550102 and +17035550101")) and bool(finding("telecom_direct", "+12025550103 and +12405550104")),
+          "direct contact between targets found")
+    check(bool(finding("telecom_shared_imei", "356724")), "handset (IMEI) moving from one target to another found")
+    check(bool(finding("telecom_imei_change", "Target +17035550101 used 2 IMEIs")), "handset change of one target found")
+    co = {(json.loads(r["facts"])["values"]["target_a"], json.loads(r["facts"])["values"]["target_b"]):
+          json.loads(r["facts"])["values"]["occasions"] for r in finding("telecom_colocation")}
+    check(co.get(("+12025550103", "+12405550104")) == 3 and co.get(("+12025550103", "+17035550101")) == 1,
+          f"co-location found: across carriers by coordinates, and on one cell three times ({co})")
+    cc = dbm.get_meta(con, "citation_check") or {}
+    check(cc.get("total", 0) > 0 and cc.get("fail", 1) == 0, f"telecom citations re-read and matched ({cc.get('pass')} of {cc.get('total')})")
+    kml = c.exports_dir / "telecom.kml"
+    try:
+        root = ET.parse(kml).getroot()
+        pm = root.findall(".//{http://www.opengis.net/kml/2.2}Placemark")
+        txt = kml.read_text(encoding="utf-8")
+        check(len(pm) > n and txt.count("http") == 1 and "<script" not in txt.lower(),
+              f"KML written and valid ({len(pm)} placemarks, no external references)")
+    except (OSError, ET.ParseError) as e:
+        check(False, f"KML written and valid ({e})")
+    figs = {fg["slug"]: fg for fg in figure_rows(con)}
+    fg = figs.get("contacts") or {}
+    probs = check_svg((c.report_dir / "figures" / fg["file"]).read_text(encoding="utf-8")) if fg.get("file") else ["not drawn"]
+    check(fg.get("status") == "ok" and not probs, "target-contact chart drawn and passes the layout checks" + (f": {probs[:3]}" if probs else ""))
+    marks = [r["fid"] for r in dbm.rows(con, "SELECT fid FROM figure_refs WHERE figure_no=1")]
+    cofids = {r["fid"] for r in finding("telecom_colocation")}
+    check(cofids and cofids <= set(marks), "co-location occasions marked on the activity timeline")
+    con.close()
+
+
+def layout_checks(check) -> None:
+    """Carrier layouts (fictional values): the format handling works on this machine."""
+    folder = app_root() / "demo" / "carrier_layouts"
+    if not folder.exists():
+        check(False, "carrier-layout demo returns present (demo/carrier_layouts)")
+        return
+    import json as _json
+    from . import db as dbm
+    from .case import create_case, register_path
+    from .jobs import start_job
+    c = create_case("Self-test carrier layouts", "selftest", "", "America/New_York")
+    con = c.db()
+    register_path(c, con, str(folder))
+    print("\nRunning the full pipeline on the carrier-layout demo returns…")
+    jid = start_job(c, con, "run", {"llm": False, "figures": False}, wait=True)
+    con = c.db()
+    check(dbm.rows(con, "SELECT status FROM jobs WHERE id=?", (jid,))[0]["status"] == "done", "carrier-layout pipeline finished")
+    targets = {r[0] for r in con.execute("SELECT DISTINCT target FROM tcore WHERE target IS NOT NULL")}
+    check({"+12025550111", "+15715550122", "+17035550133", "+12405550144"} <= targets,
+          "targets found from a file name, a preamble, 'Usage For' and an MSISDN column")
+    n, loc = con.execute("SELECT COUNT(*), SUM(lat IS NOT NULL) FROM tel WHERE src_kind='cdr' AND kind='voice' "
+                         "AND (cell IS NOT NULL OR eci IS NOT NULL)").fetchone()
+    check(n and loc == n, f"every call that names a cell located: eNodeB+sector, hex ECGI, AT&T CellLocation, inline ({loc} of {n})")
+    multi = [_json.loads(f)["values"]["phone"] for (f,) in con.execute("SELECT facts FROM findings WHERE kind='telecom_dump_multi'")]
+    check(multi == ["+17035550155"], "tower dumps from two carriers: the phone at both scenes found")
+    check(con.execute("SELECT COUNT(*) FROM tel WHERE src_kind='ta' AND target='+12025550111'").fetchone()[0] == 30,
+          "timing-advance report (named by IMSI) filed under the target number")
+    con.close()
 
 
 def make_demo_case(run: bool = False):
@@ -59,7 +154,8 @@ def selftest(keep: bool = False) -> bool:
         print(("  PASS  " if ok else "  FAIL  ") + msg, flush=True)
 
     tmp = Path(tempfile.mkdtemp(prefix="spoor-selftest-"))
-    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS")}
+    old_env = {k: os.environ.get(k) for k in ("SPOOR_CASES", "SPOOR_SETTINGS", "SPOOR_CELLSITES")}
+    os.environ["SPOOR_CELLSITES"] = str(tmp / "no-cellsites")    # results must not depend on an installed library
     print(f"Spoor self-test (temporary folder {tmp})\n")
     try:
         from . import mockllm
@@ -165,6 +261,25 @@ def selftest(keep: bool = False) -> bool:
                 ok = False
         check(ok, "report manifest hashes verify")
 
+        from .figures import figure_rows
+        from .figures.svg import check_svg
+        from .jobs import draw_figures
+        from .report import Report
+        figs = [f for f in figure_rows(con) if f["status"] == "ok" and f.get("file")]
+        check(len(figs) == 2, f"figures drawn: {', '.join(f['title'] for f in figs) or 'none'}")
+        probs = [p_ for f in figs for p_ in check_svg((rep / "figures" / f["file"]).read_text(encoding="utf-8"))]
+        check(figs and not probs, "figures pass the layout and safety checks (4 px grid, no scripts or links, every label inside its box)"
+              + (f": {probs[:3]}" if probs else ""))
+        before = {f["file"]: f["sha256"] for f in figs}
+        draw_figures(c, con)
+        after = {f["file"]: f["sha256"] for f in figure_rows(con) if f["status"] == "ok"}
+        check(before and before == after, "figures redraw byte-identical from the same findings")
+        fids = {r[0] for r in con.execute("SELECT fid FROM findings WHERE fid IS NOT NULL")}
+        refs = [r["fid"] for f in figure_rows(con) for r in f["refs"]]
+        fc = Report(c, con).figure_check()
+        check(refs and set(refs) <= fids and fc and all(x["checked"] == x["records"] and not x["problems"] for x in fc),
+              f"every finding on a figure exists and its cited records were re-read and matched ({len(set(refs))} findings)")
+
         for bad_sql in ("DELETE FROM events", "SELECT 1; DROP TABLE events", "ATTACH DATABASE 'x.db' AS x",
                         "WITH x AS (SELECT 1) DELETE FROM events", "SELECT load_extension('x')"):
             try:
@@ -191,6 +306,8 @@ def selftest(keep: bool = False) -> bool:
         check(a["sql"] and a["sql"].lower().startswith("select") and n_ev > 0, "a model asked to delete data could not change anything")
         srv.shutdown()
         con.close()
+        telecom_checks(check)
+        layout_checks(check)
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()

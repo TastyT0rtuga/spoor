@@ -11,13 +11,16 @@ class Counterparties(Analysis):
     category = "Counterparties & transactions"
 
     def run(self):
-        n_cp = self.one("SELECT COUNT(*) FROM events WHERE counterparty IS NOT NULL") or 0
+        # call/text records are covered by 'Calls, texts & cell sites'
+        has_tel = bool(self.one("SELECT 1 FROM tel LIMIT 1"))
+        self.nt = "id NOT IN (SELECT event_id FROM tel)" if has_tel else "1=1"
+        n_cp = self.one(f"SELECT COUNT(*) FROM events WHERE counterparty IS NOT NULL AND {self.nt}") or 0
         n_amt = self.one("SELECT COUNT(*) FROM events WHERE amount IS NOT NULL") or 0
         if not n_cp and not n_amt:
             return
         if n_cp:
             accts = self.q("SELECT COALESCE(account, '(no account)') AS acc, COUNT(*) AS n, COUNT(DISTINCT counterparty) AS cps "
-                           "FROM events WHERE counterparty IS NOT NULL GROUP BY acc ORDER BY n DESC, acc")
+                           f"FROM events WHERE counterparty IS NOT NULL AND {self.nt} GROUP BY acc ORDER BY n DESC, acc")
             for a in accts[: self.max]:
                 acc = a["acc"]
                 cond = "account IS NULL" if acc == "(no account)" else "account=?"
@@ -25,7 +28,7 @@ class Counterparties(Analysis):
                 top = self.q(f"SELECT counterparty, COUNT(*) AS n, CASE WHEN COUNT(DISTINCT currency) <= 1 THEN SUM(amount) END AS amt, "
                              f"MIN(ts_utc) AS f, MAX(ts_utc) AS l, "
                              f"GROUP_CONCAT(DISTINCT direction) AS dirs, GROUP_CONCAT(DISTINCT currency) AS cur FROM events "
-                             f"WHERE counterparty IS NOT NULL AND {cond} GROUP BY counterparty ORDER BY n DESC, counterparty LIMIT ?",
+                             f"WHERE counterparty IS NOT NULL AND {cond} AND {self.nt} GROUP BY counterparty ORDER BY n DESC, counterparty LIMIT ?",
                              args + (self.trows,))
                 ex = "; ".join(f"{t['counterparty']} ({plural(t['n'], 'record')}" + (f", total {fmt_num(t['amt'])}{(' ' + t['cur']) if t['cur'] else ''}" if t["amt"] is not None else "") + ")"
                                for t in top[:5])
@@ -33,13 +36,13 @@ class Counterparties(Analysis):
                         f"{plural(a['cps'], 'distinct counterparty', 'distinct counterparties')}. Most frequent: {ex}.")
                 ev = []
                 for t in top[:5]:
-                    ev += self.sample(f"counterparty=? AND {cond}", (t["counterparty"],) + args, 2)
+                    ev += self.sample(f"counterparty=? AND {cond} AND {self.nt}", (t["counterparty"],) + args, 2)
                 self.add("counterparties", f"{acc if acc != '(no account)' else 'Records without an account'}: counterparties", stmt,
                          {"values": {"account": acc, "records": a["n"], "counterparties": a["cps"]},
                           "tables": [{"title": "Counterparties", "columns": ["counterparty", "records", "amount_total", "first_utc", "last_utc", "direction", "currency"],
                                       "rows": [[t["counterparty"], t["n"], t["amt"], t["f"], t["l"], t["dirs"], t["cur"]] for t in top],
                                       "total_rows": a["cps"]}]},
-                         sql=("SELECT counterparty, COUNT(*), SUM(amount) FROM ev WHERE " +
+                         sql=("SELECT counterparty, COUNT(*), SUM(amount) FROM ev WHERE " + ("id NOT IN (SELECT id FROM calls) AND " if has_tel else "") +
                               (f"account={sq(acc)}" if acc != "(no account)" else "account IS NULL") + " GROUP BY 1 ORDER BY 2 DESC"),
                          evidence=ev, priority=2, sort_key=f"2{10**9 - a['n']:010d}{acc}", export="exports/counterparties.csv")
         if n_amt:

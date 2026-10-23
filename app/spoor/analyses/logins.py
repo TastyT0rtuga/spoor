@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..findings import plural
 from ..util import fmt_int
-from .base import T, Analysis, human_delta, sq
+from .base import EXACT, T, Analysis, human_delta, sq
 
 LOGIN_CATS = "('login','login_failed','logout','account_change','registration')"
 
@@ -44,14 +44,15 @@ class Logins(Analysis):
                              f"GROUP BY e.ip ORDER BY n DESC, e.ip LIMIT ?", (acc, self.trows))
             uas = self.q(f"SELECT user_agent, COUNT(*) AS n, MIN(ts_utc) AS f, MAX(ts_utc) AS l FROM events WHERE account=? AND "
                          f"category IN {LOGIN_CATS} AND user_agent IS NOT NULL GROUP BY user_agent ORDER BY n DESC LIMIT 10", (acc,))
-            bits = [f"{fmt_int(a['li'])} successful logins", f"{fmt_int(a['lf'])} failed", f"{fmt_int(a['lo'])} logouts",
-                    f"{fmt_int(a['ch'])} account changes"]
+            bits = [plural(a['li'], 'successful login'), f"{fmt_int(a['lf'])} failed", plural(a['lo'], 'logout'),
+                    plural(a['ch'], 'account change')]
             if a["rg"]:
-                bits.append(f"{fmt_int(a['rg'])} registration events")
+                bits.append(plural(a['rg'], 'registration event'))
             stmt = (f"Account {acc}: " + ", ".join(bits) + f", from {plural(a['ips'], 'distinct IP')} ({fmt_int(a['pub'])} public"
                     + (f", {fmt_int(a['doc'])} in documentation ranges" if a["doc"] else "") + ")"
                     + (f" and {plural(a['uas'], 'user agent')}" if a["uas"] else "")
-                    + (f", {T(a['f'])} to {T(a['l'])}" if a["f"] else "") + f" (sources: {plural(a['srcs'], 'source')}).")
+                    + (f", {T(a['f'])} to {T(a['l'])}" if a["f"] else "")
+                    + (f" (returns: {self.prov.tags(self.prov.of_account(acc))})." if self.multi else f" (sources: {plural(a['srcs'], 'source')})."))
             ev = self.sample(f"account=? AND category IN {LOGIN_CATS}", (acc,), self.nsamp)
             tables = [{"title": "Most-used IPs", "columns": ["ip", "events", "first_utc", "last_utc", "network", "country"],
                        "rows": [[t["ip"], t["n"], t["f"], t["l"], t["as_org"], t["country"]] for t in top_ips]}]
@@ -61,7 +62,8 @@ class Logins(Analysis):
             self.add("account_logins", f"Account {acc}: login activity", stmt,
                      {"values": {"account": acc, "logins": a["li"], "failed": a["lf"], "logouts": a["lo"], "changes": a["ch"],
                                  "registrations": a["rg"], "ips": a["ips"], "public_ips": a["pub"], "documentation_ips": a["doc"], "user_agents": a["uas"],
-                                 "first_utc": a["f"], "last_utc": a["l"], "sources": a["srcs"]}, "tables": tables},
+                                 "first_utc": a["f"], "last_utc": a["l"], "sources": a["srcs"],
+                                 "returns": self.prov.labels(self.prov.of_account(acc))}, "tables": tables},
                      sql=f"SELECT cite, ts_utc, category, action, ip, user_agent FROM ev WHERE account={sq(acc)} AND category IN {LOGIN_CATS} ORDER BY ts_utc",
                      evidence=ev, priority=2, sort_key=f"5{10**9 - (a['li'] + a['lf']):010d}{acc}")
 
@@ -70,7 +72,7 @@ class Logins(Analysis):
         w = int(self.p.get("burst_window_min", 10)) * 60
         fu = int(self.p.get("burst_followup_min", 30)) * 60
         accts = [r["account"] for r in self.q("SELECT account FROM events WHERE category='login_failed' AND account IS NOT NULL "
-                                               "AND ts_epoch IS NOT NULL GROUP BY account HAVING COUNT(*) >= ?", (k,))]
+                                               f"AND {EXACT} GROUP BY account HAVING COUNT(*) >= ?", (k,))]
         from collections import deque
         found = []
         for acc in accts:
@@ -81,7 +83,7 @@ class Logins(Analysis):
                 if cl and cl["max_in_window"] >= k:
                     found.append((acc, cl))
             for r in self.con.execute("SELECT id, ts_epoch, ts_utc, ip FROM events WHERE account=? AND category='login_failed' "
-                                      "AND ts_epoch IS NOT NULL ORDER BY ts_epoch, id", (acc,)):
+                                      f"AND {EXACT} ORDER BY ts_epoch, id", (acc,)):
                 f = {"id": r[0], "ts_epoch": r[1], "ts_utc": r[2], "ip": r[3]}
                 if cluster is None or f["ts_epoch"] - cluster["last"]["ts_epoch"] > w:
                     close(cluster)

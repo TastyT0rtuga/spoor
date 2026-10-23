@@ -144,11 +144,23 @@ def register_path(case: Case, con, path: str, recursive: bool = True, zip_passwo
     except OSError:
         pass
     added, skipped = [], []
-    for f in walk_files(p, recursive):
+    from . import returns as rets
+    files = walk_files(p, recursive)
+    group_of: dict = {}
+    notes: dict = {}
+    for name, root, fs, note in rets.plan_groups(p, files):
+        notes[root] = note
+        for f in fs:
+            group_of[str(f.resolve())] = (name, root)
+    return_ids: dict = {}
+    for f in files:
         rp = str(f.resolve())
         if dbm.one(con, "SELECT id FROM sources WHERE path=? AND parent_id IS NULL", (rp,)):
             skipped.append((rp, "already added"))
             continue
+        name, root = group_of.get(rp, (rets.nice_name(f), rp))
+        if root not in return_ids:
+            return_ids[root] = rets.return_for_root(con, name, root, notes.get(root, ""))
         kind = detect_kind(f)
         st = f.stat()
         label = next_label(con)
@@ -157,14 +169,15 @@ def register_path(case: Case, con, path: str, recursive: bool = True, zip_passwo
             status = "unsupported"
         cfg = {"zip_password": zip_password} if kind == "zip" and zip_password else None
         con.execute(
-            "INSERT INTO sources(label, path, display, kind, size, mtime, status, config, added_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO sources(label, path, display, kind, size, mtime, status, config, added_at, return_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (label, rp, rp, kind, st.st_size,
              dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-             status, json.dumps(cfg) if cfg else None, utc_now_str()))
-        added.append({"label": label, "path": rp, "kind": kind, "size": st.st_size, "status": status})
+             status, json.dumps(cfg) if cfg else None, utc_now_str(), return_ids[root]))
+        added.append({"label": label, "path": rp, "kind": kind, "size": st.st_size, "status": status,
+                      "return": dbm.one(con, "SELECT label FROM returns WHERE id=?", (return_ids[root],))})
     con.commit()
     case.audit(con, "sources_added", {"path": str(p), "recursive": recursive,
-                                      "added": [(a["label"], a["path"], a["kind"]) for a in added],
+                                      "added": [(a["label"], a["path"], a["kind"], a["return"]) for a in added],
                                       "skipped": skipped})
     return {"added": added, "skipped": skipped}
 

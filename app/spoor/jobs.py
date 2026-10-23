@@ -27,6 +27,7 @@ RUN_STAGES = [
     ("index", "Index, enrich and summarise"),
     ("analyze", "Run analyses"),
     ("report1", "Write report (deterministic findings)"),
+    ("figures", "Draw figures (deterministic SVG)"),
     ("verify", "Re-check citations and source hashes"),
     ("narrative", "AI-drafted summary (local model, verified)"),
     ("report2", "Write final report"),
@@ -59,7 +60,11 @@ class Progress:
 
     # stage control
     def stage(self, key: str) -> None:
-        idx = [k for k, _ in self.stages].index(key)
+        keys = [k for k, _ in self.stages]
+        if key not in keys:          # a job created by an older version lacks a newer stage
+            self.stages = list(self.stages) + [(key, key)]
+            keys.append(key)
+        idx = keys.index(key)
         self.stage_no = idx + 1
         self.done, self.total, self.unit, self.rate = 0.0, 0.0, "", None
         self._samples = []
@@ -305,7 +310,10 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
         con.commit()
 
     prog.stage("prepare")
+    from . import returns as returns_mod
+    returns_mod.apply_states(case, con, log)       # leave out excluded returns, put back included ones
     ingest.prepare_sources(case, con, prog, log)
+    returns_mod.apply_states(case, con, log)       # ZIP members extracted just now, and duplicates among active returns
     mark("prepare")
 
     prog.stage("scan")
@@ -344,6 +352,8 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     prog.message("Looking up networks (offline ASN/country data)")
     derive.enrich_ips(con, prog)
     prog.stage("index")
+    from . import telecom
+    telecom.build(con, p, prog, log)     # calls/texts/cell sites; may fill in an inferred target number
     derive.build_summaries(con, prog)
     fts = derive.build_fts(con, bool(p.get("fts", True)), prog)
     dbm.set_meta(con, "fts", fts)
@@ -351,6 +361,7 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     mark("index")
 
     prog.stage("analyze")
+    con.execute("DELETE FROM meta WHERE key LIKE 'analysis_error_%'")     # errors of an earlier run do not carry over
     prog.set_total(len(MODULES), "analyses")
     for i, M in enumerate(MODULES):
         prog.message(M.category if hasattr(M, "category") else M.__name__)
@@ -367,6 +378,12 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
         con.commit()
         prog.update(i + 1)
     n = number_findings(con)
+    from .kml import write_kml
+    write_kml(case, con, p)           # after numbering, so co-location points carry their finding IDs
+    from .mapdata import write_geojson
+    write_geojson(case, con, p)
+    from .figures import invalidate as invalidate_figures
+    invalidate_figures(case, con)     # figures are redrawn from the new findings in the Figures stage
     fp = findings_fingerprint(con)
     old_fp = dbm.get_meta(con, "findings_fingerprint")
     if old_fp != fp:
@@ -381,6 +398,18 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     prog.stage("report1")
     write_reports(case, con, prog)
     mark("report1")
+
+    prog.stage("figures")
+    figs = None
+    if params.get("figures", p.get("figures", True)):
+        figs = draw_figures(case, con, prog, log)
+    else:
+        from .figures import invalidate as invalidate_figures
+        invalidate_figures(case, con)
+        dbm.set_meta(con, "figures", {"off": True})
+        con.commit()
+        prog.message("Figures not requested")
+    mark("figures")
 
     prog.stage("verify")
     mode = params.get("citation_check") or p.get("citation_check", "all")
@@ -412,17 +441,49 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     prog.stage("report2")
     write_reports(case, con, prog)
     mark("report2")
-    return {"findings": n, "ingest": stats, "citation_check": cc, "narrative": nar, "stage_seconds": timings}
+    return {"findings": n, "ingest": stats, "citation_check": cc, "figures": figs, "narrative": nar, "stage_seconds": timings}
+
+
+def draw_figures(case, con, prog=None, log=None) -> dict:
+    """Draw every figure, then rewrite the report files that show or list them. Never raises for a figure."""
+    from .figures import run_figures
+    from .report import Report
+    try:
+        figs = run_figures(case, con, prog, log)
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ == "Cancelled":
+            raise
+        if log:
+            log.exception("figures")
+        figs = {"error": f"{type(e).__name__}: {e}"}
+        dbm.set_meta(con, "figures", figs)
+        con.commit()
+    Report(case, con, prog).write_after_figures()
+    return figs
 
 
 def _validate_sql(con, log) -> None:
-    """Every finding's reproduce-SQL must run; a broken one is removed rather than shown."""
-    for r in dbm.rows(con, "SELECT id, fid, sql FROM findings WHERE sql IS NOT NULL"):
+    """Every finding's reproduce query must run, and a finding that rests on records must get at least one row back.
+    One that fails keeps its finding but loses the query, and the failure is recorded (REVIEW.md, FINDINGS.md, the
+    dashboard) - never only in the log."""
+    fails = []
+    for r in dbm.rows(con, "SELECT f.id, f.fid, f.kind, f.sql, (SELECT COUNT(*) FROM finding_evidence fe WHERE fe.finding_id = f.id) AS nev "
+                           "FROM findings f WHERE f.sql IS NOT NULL AND f.fid IS NOT NULL"):
+        q = r["sql"].strip().rstrip(";").strip()
+        why = None
         try:
-            con.execute(f"SELECT * FROM ({r['sql']}) LIMIT 1").fetchall()
+            rows = con.execute(f"SELECT * FROM (\n{q}\n) LIMIT 1").fetchall()
+            if r["nev"] and not rows:
+                why = "the query returns no rows although the finding cites records"
         except Exception as e:  # noqa: BLE001
-            log.warning("finding %s: reproduce SQL failed (%s); removed", r["fid"], e)
+            why = f"the query does not run ({e})"
+        if why:
+            log.warning("finding %s (%s): reproduce SQL %s; removed", r["fid"], r["kind"], why)
+            fails.append([r["fid"], why, q[:2000]])
             con.execute("UPDATE findings SET sql=NULL WHERE id=?", (r["id"],))
+        elif q != r["sql"]:
+            con.execute("UPDATE findings SET sql=? WHERE id=?", (q, r["id"]))
+    dbm.set_meta(con, "sql_failures", fails)
 
 
 # ---------------------------------------------------------------- PROGRESS.md / status
@@ -449,6 +510,13 @@ def status_text(case, con, markdown: bool = True) -> str:
         except ValueError:
             pass
     lines.append(f"Job #{j['id']} ({j['kind']}): **{j['status'].upper()}**" if markdown else f"Job #{j['id']} ({j['kind']}): {j['status'].upper()}")
+    errs = dbm.analysis_errors(con)
+    if errs:
+        lines.append(("**" if markdown else "") + f"WARNING: {len(errs)} analysis module{'s' if len(errs) > 1 else ''} FAILED - their findings are missing from the report: "
+                     + "; ".join(f"{m} ({e[:120]})" for m, e in errs) + ("**" if markdown else ""))
+    from . import returns as _rets
+    for lab, nm, note in _rets.grouping_notes(con):
+        lines.append(f"Check return {lab} ({nm}): {note}")
     if j.get("started_at"):
         lines.append(f"Started {j['started_at']}" + (f", running for {fmt_duration(elapsed)}" if elapsed and j["status"] == "running" else
                                                       (f", took {fmt_duration(elapsed)}" if elapsed else "")))

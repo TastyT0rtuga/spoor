@@ -122,9 +122,9 @@ class Temporal(Analysis):
         first, last = rows[0]["day"], rows[-1]["day"]
         span = (dt.date.fromisoformat(last) - dt.date.fromisoformat(first)).days + 1
         stmt = (f"Events fall on {plural(len(rows), 'distinct UTC day')} between {first} and {last} ({plural(span, 'calendar day')}); "
-                f"median {fmt_int(med)} events per active day.")
+                f"median {fmt_int(med)} {'event' if med == 1 else 'events'} per active day.")
         if spikes:
-            stmt += (f" {plural(len(spikes), 'day')} have at least {fmt_int(thr)} events (5 times the median, minimum 10): "
+            stmt += (f" {plural(len(spikes), 'day')} {'has' if len(spikes) == 1 else 'have'} at least {fmt_int(thr)} events (5 times the median, minimum 10): "
                      + "; ".join(f"{r['day']} ({plural(r['n'], 'event')})" for r in spikes[:8]) + (" ..." if len(spikes) > 8 else "") + ".")
         ev = []
         for r in spikes[:5]:
@@ -188,7 +188,8 @@ class Temporal(Analysis):
                      {"values": {"account": acc, "source": lab, "kind": kind, "gap_start_utc": a["ts_utc"],
                                  "gap_end_utc": b["ts_utc"], "gap": human_delta(d), "gap_days": round(d / 86400, 1),
                                  "median_interval": human_delta(med), "min_days": min_days, "factor": factor}},
-                     sql=(f"SELECT cite, ts_utc FROM ev WHERE source='{lab}'" + (f" AND account={sq(acc)}" if acc else "") +
+                     sql=(f"SELECT cite, ts_utc FROM ev WHERE source={sq(self.one('SELECT label FROM sources WHERE id=?', (sid,)))}"
+                          + (f" AND account={sq(acc)}" if acc else "") +
                           f" AND ts_utc BETWEEN '{a['ts_utc']}' AND '{b['ts_utc']}' ORDER BY ts_utc"),
                      evidence=[(a["id"], "last record before gap"), (b["id"], "first record after gap")],
                      priority=2, sort_key=f"5{10**12 - int(d):013d}")
@@ -205,7 +206,7 @@ class Temporal(Analysis):
             prev = None
             for row in self.con.execute(
                     f"SELECT e.id, e.ts_epoch, e.ts_utc, e.ip, e.ip_ver, x.asn, x.as_org, x.country FROM events e "
-                    f"LEFT JOIN ip_enrich x ON x.ip=e.ip WHERE e.account=? AND e.ip_class IN {ATTR_SQL} AND {TIMED.replace('ts_', 'e.ts_')} "
+                    f"LEFT JOIN ip_enrich x ON x.ip=e.ip WHERE e.account=? AND e.ip_class IN {ATTR_SQL} AND {TIMED_HOURS.replace('ts_', 'e.ts_')} "
                     f"ORDER BY e.ts_epoch, e.id", (acc,)):
                 b = dict(zip(cols, row))
                 a = prev

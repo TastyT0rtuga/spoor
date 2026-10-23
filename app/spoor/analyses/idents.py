@@ -27,9 +27,10 @@ class Identifiers(Analysis):
             top = self.q("SELECT norm, validity, events, sources, accounts, first_utc, last_utc FROM ident_summary WHERE kind=? "
                          "ORDER BY events DESC, norm LIMIT ?", (k["kind"], min(self.trows, 15)))
             tables.append({"title": f"{label} (top {len(top)})",
-                           "columns": ["value", "validated", "records", "sources", "accounts", "first_utc", "last_utc"],
-                           "rows": [[t["norm"], t["validity"], t["events"], t["sources"], t["accounts"], t["first_utc"], t["last_utc"]]
-                                    for t in top], "total_rows": k["distinct_values"]})
+                           "columns": ["value", "validated", "records", "sources"] + (["returns"] if self.multi else []) + ["accounts", "first_utc", "last_utc"],
+                           "rows": [[t["norm"], t["validity"], t["events"], t["sources"]]
+                                    + ([self.prov.labels(self.prov.of_ident(k["kind"], t["norm"]))] if self.multi else [])
+                                    + [t["accounts"], t["first_utc"], t["last_utc"]] for t in top], "total_rows": k["distinct_values"]})
         stmt = "Identifiers found in the records - " + "; ".join(parts) + ". Cryptocurrency addresses, IMEIs and checksummed formats were kept only when their checksum verified."
         self.add("identifier_inventory", "Identifier inventory", stmt,
                  {"values": {k["kind"]: k["distinct_values"] for k in kinds}, "tables": tables},
@@ -51,6 +52,8 @@ class Identifiers(Analysis):
         # accounts named in the data that are themselves identifiers of other kinds (e.g. recovery emails)
         rec = self.q("SELECT e.account AS account, i.kind, i.norm, COUNT(*) AS n FROM identifiers i JOIN events e ON e.id=i.event_id "
                      "WHERE i.kind IN ('email','phone') AND e.account IS NOT NULL AND i.norm != lower(e.account) "
+                     "AND e.id NOT IN (SELECT event_id FROM tel) "   # call/text parties: see 'Calls, texts & cell sites'
+
                      "GROUP BY e.account, i.kind, i.norm ORDER BY e.account, n DESC LIMIT 5000")
         by: dict = {}
         for r in rec:

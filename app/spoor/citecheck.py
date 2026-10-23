@@ -2,7 +2,9 @@
 
 Independent of the ingest path wherever possible: text files are re-read by byte offset, HTML
 by source line, PDF by page; workbooks and JSON are re-opened and the cited row/path is located
-again. Each record's stored IP and timestamp text must also appear literally in what was re-read."""
+again. Each record's stored timestamp text, IP, account (when read from a column), other party, and for call records
+the cell, IMEI and IMSI, must also appear literally in what was re-read. The check proves the record exists and says what
+was stored; it does not prove the timezone, the day/month order, the column mapping or a finding's conclusion."""
 from __future__ import annotations
 
 import html as htmlmod
@@ -27,7 +29,37 @@ def _check_values(ev: dict, text: str) -> list[str]:
     for col in ("ip_raw", "ts_raw"):
         v = ev.get(col)
         if v and _norm(str(v)) not in t:
+            # a time built from separate date and time (and zone) columns is stored joined by spaces:
+            # each part must then appear literally
+            parts = _norm(str(v)).split(" ")
+            if col == "ts_raw" and len(parts) > 1 and all(p in t for p in parts):
+                continue
             problems.append(f"{col} '{v}' not found in the re-read text")
+    # who and what the record was credited to, not only when and from where (reviews #1 F-12, #2 Q8, #3 SR-14)
+    digits_t = re.sub(r"\D", "", text)
+    acct, basis = ev.get("account"), ev.get("account_basis") or ""
+    if acct and "source default" not in basis:
+        if "E.164" in basis:
+            d = re.sub(r"\D", "", acct)
+            if d and d not in digits_t and d[-10:] not in digits_t:
+                problems.append(f"account '{acct}' (from a column) not found in the re-read text")
+        elif _norm(str(acct)).lower() not in t.lower():
+            problems.append(f"account '{acct}' (from a column) not found in the re-read text")
+    cp = ev.get("counterparty")
+    if cp:
+        d = re.sub(r"\D", "", str(cp))
+        if _norm(str(cp)).lower() not in t.lower() and not (len(d) >= 7 and d[-10:] in digits_t):
+            problems.append(f"counterparty '{cp}' not found in the re-read text")
+    try:
+        tel = (json.loads(ev.get("extra") or "{}") or {}).get("_tel") or {}
+    except (TypeError, ValueError):
+        tel = {}
+    for k in ("cell", "cell_last", "imei", "imsi", "eci", "other", "target"):
+        v = tel.get(k)
+        if v and _norm(str(v)).lower() not in t.lower():
+            d = re.sub(r"\D", "", str(v))
+            if not (len(d) >= 5 and d in digits_t):
+                problems.append(f"telecom {k} '{v}' not found in the re-read text")
     return problems
 
 

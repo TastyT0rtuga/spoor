@@ -7,11 +7,16 @@ from typing import Optional
 from .. import db as dbm
 from ..config import HOSTING_KEYWORDS
 from ..findings import FindingWriter, cite_of, evidence_sample, labels_for  # noqa: F401
+from ..provenance import Provenance
 
 ATTRIBUTABLE = ("public", "documentation")
 ATTR_SQL = "('public','documentation')"
-TIMED = "ts_epoch IS NOT NULL AND (ts_flag IS NULL OR (ts_flag NOT LIKE '%implausible_year%'))"
+# events whose instant is known: not an implausible year, and not a day/month order that the data could not prove
+TIMED = ("ts_epoch IS NOT NULL AND (ts_flag IS NULL OR (ts_flag NOT LIKE '%implausible_year%' "
+         "AND ts_flag NOT LIKE '%date_order_assumed%'))")
+# ... and a time of day (bursts, co-use, switches, anything measured in minutes)
 TIMED_HOURS = TIMED + " AND (ts_flag IS NULL OR ts_flag NOT LIKE '%date_only%')"
+EXACT = TIMED_HOURS
 
 
 class Analysis:
@@ -31,6 +36,8 @@ class Analysis:
         self.geo = dbm.get_meta(con, "geoip", {}) or {}
         has_doc = dbm.one(con, "SELECT 1 FROM ip_summary WHERE ip_class='documentation' LIMIT 1")
         self.pub = "public or documentation-range" if has_doc else "public"
+        self.prov = Provenance(con)
+        self.multi = self.prov.multi            # two or more returns: statements and tables name the return behind each source
 
     # ------------------------------------------------------------ sql helpers
     def q(self, sql: str, args=()) -> list[dict]:
@@ -46,7 +53,8 @@ class Analysis:
         return cite_of(self.con, eid)
 
     def labels(self, ids) -> str:
-        return labels_for(self.con, ids)
+        """Source labels (S03, S05). With several returns each is followed by its return: S03 (R02)."""
+        return labels_for(self.con, ids, with_returns=self.multi)
 
     def add(self, kind, title, statement, facts, sql=None, evidence=(), priority=2, sort_key="", export=None, cites=()):
         return self.fw.add(self.category, kind, title, statement, facts, sql, evidence, priority, sort_key, export, cites)
@@ -92,7 +100,7 @@ def closest_couse(con, ip: str, accounts: Optional[set] = None):
     Streams the rows, so IPs with millions of records cost no memory.
     Returns (seconds, event_id_a, account_a, ts_a, event_id_b, account_b, ts_b, activity) or None."""
     acts = ",".join(f"'{c}'" for c in ACTIVITY_CATS)
-    base = ("SELECT id, account, ts_epoch, ts_utc FROM events WHERE ip=? AND account IS NOT NULL AND ts_epoch IS NOT NULL "
+    base = ("SELECT id, account, ts_epoch, ts_utc FROM events WHERE ip=? AND account IS NOT NULL AND " + EXACT + " "
             "AND (ts_flag IS NULL OR ts_flag NOT LIKE '%date_only%')")
     for activity, extra in ((True, f" AND category IN ({acts})"), (False, "")):
         best = None

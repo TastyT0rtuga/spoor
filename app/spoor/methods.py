@@ -47,10 +47,12 @@ def methods_text(case, con) -> str:
           "basis of the conversion recorded per record. IP addresses are normalised and classified. Identifiers are extracted and validated.",
           "4. **Analyse.** Deterministic SQL and Python analyses produce findings. Each finding stores the values it states, the "
           "records it rests on, and a reproducing query. Finding numbers are assigned in a fixed order.",
-          "5. **Report.** Markdown files and CSV exports are written; a SHA-256 manifest covers the report folder.",
-          "6. **Citation check.** Cited records are located again in the original files and compared with the stored text; "
+          "5. **Report.** Markdown files and CSV exports are written; a SHA-256 manifest covers the report folder. REPORT.md is the analysis (BLUF, figures, narrative, numbered references, Appendix A negative results, Appendix B data notes); each sentence is composed from a finding's own facts and ends with its reference number. REPORT-FULL.md is the long form. When two or more returns are included CROSSREF.md lists only items present in more than one return. A return left out by the analyst takes no part in any result; this is recorded as a finding.",
+          "6. **Figures.** Deterministic SVG figures are drawn from the findings (see Figures below); a figure that fails is "
+          "listed in REVIEW.md and does not stop the run.",
+          "7. **Citation check.** Cited records are located again in the original files and compared with the stored text; "
           "source hashes are recomputed.",
-          "7. **Optional AI draft.** A local language model may draft summary sentences from the findings. Every sentence is "
+          "8. **Optional AI draft.** A local language model may draft summary sentences from the findings. Every sentence is "
           "verified mechanically (below); failures are removed and listed in REVIEW.md.", ""]
     L += ["## Reading files", "", _t(["Format", "How it is read", "Citation form"], [
         ["CSV / TSV / pipe / semicolon", "delimiter and header detected from the first 400 lines; preamble lines kept for context; lines "
@@ -141,9 +143,81 @@ def methods_text(case, con) -> str:
          f"co-use window {p['coincidence_window_min']} min (priority); non-public addresses {'included' if p['link_include_nonpublic'] else 'excluded'}"],
         ["Identifiers", "inventory with validation; other e-mails and phones in each account's records", "-"],
         ["Counterparties", "most frequent counterparties per account; largest amounts (totals only within one currency)", "-"],
-        ["Watchlists", "matches against analyst-supplied lists of IPs, ranges and identifiers", ", ".join(wl) or "none supplied"]]), ""]
+        ["Watchlists", "matches against analyst-supplied lists of IPs, ranges and identifiers", ", ".join(wl) or "none supplied"]]
+        + ([["Calls, texts & cell sites", "telecom returns (call detail records and cell-site lists), any number at once: per-target "
+         "profile and top contacts; direct contact between targets; numbers in contact with 2+ targets and the target-by-target "
+         "overlap table; IMEIs/IMSIs on 2+ targets and handset/SIM changes; co-location; KML (exports/telecom.kml)",
+         f"co-location = two targets on cell sites within {int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m (or the same cell ID "
+         f"in the same carrier's folder when there are no coordinates) within {p.get('tel_coloc_window_min', 15)} min; common "
+         f"contact = {p.get('tel_common_min_targets', 2)}+ targets; KML draws up to {p.get('kml_max_points', 20000)} records, "
+         f"sector wedges {p.get('kml_sector_km', 1.0)} km long"]] if dbm.get_meta(con, "telecom") else [])), ""]
+    if dbm.get_meta(con, "telecom"):
+        L += ["### Telecom returns", "",
+              "- **Reading.** A table is read as telecom records when it has originating and terminating numbers, a cell / eNodeB / "
+              "ECI column, an IMSI, an other party with a duration, or a phone with a location estimate (Sources -> the file -> "
+              "'Read as' shows and changes every choice). A table of cell identities with coordinates and nothing about calls is a "
+              "cell-site (tower) list; its dates (e.g. ListDate) describe the list and are not events. Report text files holding "
+              "several tables (a voice and a data table; one section per tower-dump search) are read table by table, each named by "
+              "the label above it. When a carrier gives a local time and a GMT/UTC time, the GMT/UTC column is used; a date column "
+              "that is midnight on every row next to a 'time' column is combined with it.",
+              "- **Target.** The row's account (MSISDN / MTN column), else the number the return names in its preamble ('Target "
+              "Number:', 'o Target MSISDN :', 'Voice Usage For:'), else the number in the file name - carriers name call-record files "
+              "after the target ('CDR_Mediations_<number>_...', 'CellSites-CDR_..._<number>', '..._CXM_HDA_volte_<number>_...') - "
+              "else the number on one end of at least 80% of the rows. File-name and inferred targets are priority-1 assumptions in "
+              "REVIEW.md. Timing-advance reports are named after the IMSI; when a call-record return shows which number used that "
+              "IMSI, the records are filed under that number (cited). North American numbers are written in E.164 (+1...). "
+              "Direction is from the target's side; forwarded legs (Verizon 'MF') are kept but not counted as contacts.",
+              "- **Cell identity.** Every LTE cell is reduced to its ECI (eNodeB x 256 + cell), however the carrier writes it: a "
+              "decimal ECI / LTE_CI / E_CGI / CGI; an ECGI 'MCC-MNC + hex ECI' (e.g. 311480-0c82216); 'MCC-MNC-eNodeB-cell' "
+              "(e.g. 311580-123456-1); a 15-digit ECGI (MCC, MNC, 9-digit ECI); an eNodeB column plus the record's sector / cell-face "
+              "column (e.g. 1st LTE Site ID 48221 + 1st LTE Sector ID 2; eNB ID 51234 + Cell Face 22); or AT&T's CellLocation "
+              "'[ECI:eNodeB:longitude:latitude:azimuth:...]' (longitude first; 0,0 or azimuth -1 mean unknown; when several cells are "
+              "listed the first is used). A tower list's 'Sector' (1/2/3) is not a cell ID and is not combined with the eNodeB.",
+              "- **Cell-site locations.** A record takes coordinates written on the record itself, else those of its cell from a tower "
+              "list - by ECI, or by the cell label as written when there is no ECI - preferring a list in the same folder (the same "
+              "carrier); a list elsewhere is used only if every list naming that cell agrees within "
+              f"{int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m. Azimuth and beamwidth missing from the record are taken from "
+              "the tower list entry for the same ECI. Each located record cites the tower-list row its coordinates came from.",
+              "- **Reference cell-site library.** Records the case's own lists do not place are looked up, by ECI, in the "
+              "carrier lists kept in Spoor's cellsites/ folder (indexed with `spoor cellsites index`; these lists are not part of "
+              "Spoor and did not come with the return). The carrier is taken from the case setting tel_carrier, else from the "
+              "return's file name or folder (e.g. CDR_Mediations / TWD_ / TimingAdvance = T-Mobile, ReportAU / ReportTOWER = "
+              "AT&T, CellSites-CDR / VoLTE = Verizon, CXM_HDA = UScellular); an ECI is unique only within one carrier, so with "
+              "no carrier a cell is placed only when every library list naming it agrees within "
+              f"{int(float(p.get('tel_same_site_km', 0.1)) * 1000)} m. Lists without ECIs (older CDMA lists) are used by cell "
+              "label and only when the carrier is known. Each record so placed cites the list file and row; REVIEW.md lists every "
+              "library file used with its SHA-256 so its date can be checked against the records.",
+              "- **Handsets.** IMEIs are compared on their first 14 digits (type allocation code + serial): carriers append a Luhn "
+              "check digit, a 0 or a two-digit software version. A value shown in scientific notation (e.g. 3.5E+14) was "
+              "damaged by a spreadsheet before it reached Spoor and is not used (counted in the data-quality finding).",
+              "- **Tower dumps.** A source is a tower dump when its file name says so (TWD_, ReportTOWER, TowerData, ...) or when it "
+              "covers many phones with none on half its records. Its records are about the phone on the tower: the 'Number "
+              "Associated w/Tower' / MSISDN column, else the calling number of an outgoing record and the called number of an "
+              "incoming one. Dump records from any number of carriers are grouped into scenes by time (a gap of more than "
+              f"{p.get('tel_scene_gap_hours', 3)} hours starts a new scene); phones and handsets seen at two or more scenes, and dump "
+              "phones that are targets or contacts of targets, are reported. A dump record shows that the phone used a dumped cell "
+              "in that window, not that it was at a particular address.",
+              "- **Contact chains (degrees of separation).** Every call or text record joins its two numbers (call-detail returns and calls "
+              "seen in tower dumps). A chain between two numbers is the shortest sequence of such joins, found by breadth-first search "
+              f"up to {p.get('tel_path_max_hops', 6)} hops; all chains of that length are listed (up to 10 per pair), each hop with its "
+              "record count, returns and first/last citations. A hop is only visible where at least one end is a number whose records "
+              "were returned, so chains pass through targets and dump phones. Short codes (fewer than 7 digits) and contact numbers with "
+              f"more than {p.get('tel_hub_max', 25)} different neighbours are not used as links (they can still be chosen as endpoints), "
+              "and a tower dump is only ever an endpoint; what was left out is listed with each result. Chains of 3 or more hops between "
+              "targets, chains from tower-dump phones to targets through someone else, and the analyst's saved link groups "
+              "(Links screen) are reported. A chain shows contact one hop after another; it does not show that anything passed along it.",
+              "- **Location estimates.** Timing-advance (end latitude/longitude, confidence) and ping positions are the carrier's "
+              "estimate of where the DEVICE was. They are stored and drawn apart from cell sites, with the confidence as the carrier "
+              "states it, and are not counted as calls or data use.",
+              "- **What a location means.** A record's coordinates are those of the cell site that served it, not of the phone. "
+              "Sector direction is shown but coverage area and range are not modelled; KML wedges are a fixed-length drawing aid. "
+              "Co-location therefore means both phones were served by co-located sites close in time - not that the users were "
+              "together. Carriers differ in whether the first/last cell and the time of seizure or of answer is recorded.",
+              "- **Not analysed in this version.** 3G (LAC + cell ID, Lucent sector offsets) tower joins, per-call RTT distance "
+              "reports, and the IP addresses of data sessions (unless mapped as an IP column).", ""]
     if wl:
         L += ["Watchlists used:", "", _t(["File", "Entries", "SHA-256"], [[k, str(v[1]), v[0]] for k, v in wl.items()]), ""]
+    L += figures_section(con, p)
     L += ["## Language model (optional)", ""]
     if llm_used:
         L += ["Calls made in this case:", "",
@@ -173,3 +247,48 @@ def methods_text(case, con) -> str:
           "- Records repeated across overlapping returns are counted once per source (see the duplicate-events finding).",
           "- Very long records are truncated in the report (full text remains in the source file at the cited location).", ""]
     return "\n".join(L) + "\n"
+
+
+def figures_section(con, p: dict) -> list[str]:
+    from .figures import figure_rows
+    figs = figure_rows(con)
+    tel_row = [["3. Target-contact chart", "Telecom target numbers either side; in the middle, one node per pair of targets in direct "
+              "contact (dashed outline) and one per number in contact with two or more targets (a common-contact finding). Each line is "
+              "labelled with that target's records with that number; a dashed line labelled 0 means the contact is only in the other "
+              "target's records. Sides are chosen as for figure 2. The contact shared by the most targets (3 or more) is the only accent.",
+              f"targets {p.get('figure_contacts_max_targets', 12)}, middle nodes {p.get('figure_contacts_max_contacts', 16)}"]] if dbm.get_meta(con, "telecom") else []
+    L = ["## Figures", "",
+         "Figures are drawn by Spoor itself from the findings and the case database - no language model is involved, and the same "
+         "findings always give byte-identical SVG files. Each file embeds the fonts it uses (Atkinson Hyperlegible Next and Mono, "
+         "SIL Open Font License) and contains no scripts and no external references. Every mark carries the finding it comes from, "
+         "as visible text or a numbered marker and as an SVG tooltip; FIGURES.md lists each figure's sources, the records they cite "
+         "and the queries that reproduce what is drawn. Labels too long for their box are shortened with an ellipsis on the figure "
+         "and given in full in the tooltip and the sources table. Any limit that applies is printed on the figure. Layout rules: a 4 px "
+         "grid, 1 px lines, one accent colour (priority 1 only), meaning never carried by colour alone; they are checked automatically "
+         "every time a figure is drawn. The conventions are adapted from diagram-design by Cathryn Lavery (MIT licence).", "",
+         _t(["Figure", "How it is drawn", "Limits (Analysis settings)"], [
+             ["1. Activity timeline", "One lane per account (accounts named in priority-1 findings first, then the busiest; drawn in order of "
+              "first activity). Bars count activity records - the TIMELINE data - per UTC bin, using the finest of minute, 5 or 15 minutes, "
+              "hour, 3 or 6 hours, day, week (Monday start), month, quarter or year that fits the width; date-only records sit on their "
+              "calendar date and are left out at finer than daily bins. Bar height is banded on a logarithmic scale; the bands are printed "
+              "on the figure. UTC is on top and the case's local zone underneath. A silence longer than a quarter of the drawn time (and at "
+              "least a week) is cut from the axis and labelled with its length in days (at most four axis pieces). Priority-1 findings "
+              "whose cited records fall within 24 hours are marked at their earliest cited record and numbered in time order; for a "
+              "linked-account group the closest co-use" + (", and for a telecom co-location finding the closest pair of records," if dbm.get_meta(con, "telecom") else "") + " is marked. Other priority-1 findings are listed on the figure as not tied to one moment.",
+              f"lanes {p.get('figure_timeline_max_accounts', 12)}, markers {p.get('figure_timeline_max_markers', 12)}"],
+             ["2. Account-IP link chart", "One panel per linked-group finding (largest first). Shared IPs in the middle, accounts either "
+              "side - for up to 10 accounts every split between the sides is tried and the one with the fewest crossing lines kept. Each "
+              "line joins an account to an IP it used and is labelled with that account's number of records on that IP. The closest co-use "
+              "the finding reports is the only element in the accent colour.",
+              f"panels {p.get('figure_links_max_clusters', 3)}, accounts per panel {p.get('figure_links_max_accounts', 12)}, "
+              f"IPs per panel {p.get('figure_links_max_ips', 16)}"]] + tel_row), ""]
+    if figs:
+        rows = []
+        for f in figs:
+            state = {"ok": "drawn", "skipped": "not drawn"}.get(f["status"], "FAILED")
+            extra = "; ".join(n for n in f["notes"] if not n.startswith(("Bars count", "Each line joins"))) or "-"
+            rows.append([f"{f['no']}. {f['title']}", state + (f" ({f['reason']})" if f.get("reason") else ""), extra])
+        L += ["In this report:", "", _t(["Figure", "Status", "Not shown / limits applied"], rows), ""]
+    elif not p.get("figures", True) or (dbm.get_meta(con, "figures") or {}).get("off"):
+        L += ["Figures were switched off for this run.", ""]
+    return L

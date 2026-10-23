@@ -11,10 +11,11 @@ from typing import Callable, Optional
 
 from . import db as dbm
 from . import readers
+from .returns import ACTIVE_SQL
 from .identifiers import EMAIL_RE, extract as extract_ids, phone_from_cell
 from .ipaddr import classify, find_ips, split_ip_port, subnet_key
-from .mapping import (apply_status, categorize, default_account_from, propose_mapping,
-                      suggest_default_category)
+from .mapping import (TEL_FIELDS, apply_status, categorize, default_account_from, is_tel_mapping, is_tower_mapping,
+                      propose_mapping, suggest_default_category, target_from_filename)
 from .timeparse import TsParser, TzSpec, fmt_utc, infer_date_order, suggest_source_tz
 from .util import sha256_file, utc_now_str
 
@@ -31,7 +32,7 @@ INSERT_ID = "INSERT INTO identifiers(event_id, source_id, kind, value, norm, val
 def prepare_sources(case, con, prog=None, log=None) -> None:
     """Extract ZIPs (registering members as sources), hash every file, flag exact duplicates."""
     while True:
-        zips = dbm.rows(con, "SELECT * FROM sources WHERE kind='zip' AND status='new' ORDER BY id")
+        zips = dbm.rows(con, f"SELECT * FROM sources WHERE kind='zip' AND status='new' AND {ACTIVE_SQL} ORDER BY id")
         if not zips:
             break
         for z in zips:
@@ -52,15 +53,15 @@ def prepare_sources(case, con, prog=None, log=None) -> None:
                 st = path.stat()
                 label = f"S{(dbm.one(con, 'SELECT COUNT(*) FROM sources') or 0) + 1:02d}"
                 con.execute(
-                    "INSERT INTO sources(label, path, display, parent_id, member, kind, size, mtime, status, added_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO sources(label, path, display, parent_id, member, kind, size, mtime, status, added_at, return_id)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (label, str(path), f"{z['display']} ▸ {name}", z["id"], name, kind, st.st_size, "",
-                     "unsupported" if kind in ("unsupported", "empty", "unreadable") else "new", utc_now_str()))
+                     "unsupported" if kind in ("unsupported", "empty", "unreadable") else "new", utc_now_str(), z.get("return_id")))
             cfg.pop("zip_password", None)
             con.execute("UPDATE sources SET status='container', config=? WHERE id=?", (json.dumps(cfg), z["id"]))
             con.commit()
             case.audit(con, "zip_extracted", {"source": z["label"], "members": len(members), "to": str(dest)})
-    todo = dbm.rows(con, "SELECT id, label, path, size FROM sources WHERE sha256 IS NULL ORDER BY id")
+    todo = dbm.rows(con, f"SELECT id, label, path, size FROM sources WHERE sha256 IS NULL AND {ACTIVE_SQL} ORDER BY id")
     total = sum(r["size"] or 0 for r in todo) or 1
     done = 0
     if prog:
@@ -82,8 +83,8 @@ def prepare_sources(case, con, prog=None, log=None) -> None:
             con.commit()
             continue
         con.execute("UPDATE sources SET sha256=?, hashed_at=? WHERE id=?", (h, utc_now_str(), r["id"]))
-        dup = dbm.one(con, "SELECT label FROM sources WHERE sha256=? AND id<? AND kind!='zip' AND status!='duplicate' ORDER BY id LIMIT 1",
-                      (h, r["id"]))
+        dup = dbm.one(con, f"SELECT label FROM sources WHERE sha256=? AND id<? AND kind!='zip' AND status NOT IN ('duplicate','excluded') "
+                           f"AND {ACTIVE_SQL} ORDER BY id LIMIT 1", (h, r["id"]))
         if dup:
             con.execute("UPDATE sources SET status='duplicate', error=? WHERE id=?",
                         (f"identical to {dup} (same SHA-256); not ingested twice", r["id"]))
@@ -144,6 +145,11 @@ def build_config(scan: dict, src: dict, params: dict) -> dict:
         if m:
             acct, abasis = m.group(1), f"file name '{name}'"
     has_account_col = any(t.get("mapping", {}).get("account") for t in cfg["tables"])
+    tel_file = any(is_tel_mapping(t.get("mapping") or {}) and not is_tower_mapping(t.get("mapping") or {})
+                   for t in cfg["tables"])
+    if not acct and tel_file and not has_account_col \
+            and not any((t.get("mapping") or {}).get("subject") for t in cfg["tables"]):
+        acct, abasis = target_from_filename(name)
     cfg["default_account"] = acct or ""
     cfg["default_account_basis"] = abasis if acct else ""
     if acct and has_account_col:
@@ -176,7 +182,7 @@ def build_config(scan: dict, src: dict, params: dict) -> dict:
 
 
 def scan_sources(case, con, prog=None, log=None, rescan_ids: Optional[list] = None) -> None:
-    q = "SELECT * FROM sources WHERE status IN ('new') AND kind NOT IN ('zip')"
+    q = f"SELECT * FROM sources WHERE status IN ('new') AND kind NOT IN ('zip') AND {ACTIVE_SQL}"
     todo = dbm.rows(con, q + " ORDER BY id")
     if rescan_ids:
         todo += dbm.rows(con, f"SELECT * FROM sources WHERE id IN ({','.join('?' * len(rescan_ids))})", rescan_ids)
@@ -254,6 +260,8 @@ class Ctx:
         self.parsers: dict = {}
         self.tables = {t["name"]: t for t in cfg.get("tables", [])}
         self.imei_ctx = any("imei" in (h or "").lower() for t in cfg.get("tables", []) for h in (t.get("headers") or []))
+        # tables read as call detail records / cell-site lists (any telecom column mapped)
+        self.tel_tables = {t["name"] for t in cfg.get("tables", []) if is_tel_mapping(t.get("mapping") or {})}
 
     def parser(self, table: Optional[str], column: bool) -> TsParser:
         t = self.tables.get(table or "", {})
@@ -263,6 +271,9 @@ class Ctx:
             p = TsParser(self.tz, date_order=t.get("date_order", "MDY"), column_mode=column)
             self.parsers[key] = p
         return p
+
+
+_NUMDATE = re.compile(r"^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b")
 
 
 def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
@@ -301,12 +312,43 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
         for h, v in cells.items():
             if h not in used and v not in (None, ""):
                 extra[h] = _txt(v, 2000)
+        tel = {}
+        for fld in TEL_FIELDS:
+            h = mapping.get(fld)
+            if h:
+                v = _txt(cells.get(h), 200)
+                if v is not None:
+                    tel[fld] = v
+        if tel and rec.table not in ctx.tel_tables:
+            # telecom columns in a table that is not read as telecom (an analyst's mapping): keep them as plain cells
+            for fld, v in tel.items():
+                extra[mapping[fld]] = v
+            tel = {}
+        if tel:
+            extra["_tel"] = tel
+            if mapping.get("duration"):
+                extra["_tel_duration_header"] = mapping["duration"]
+            if is_tower_mapping(mapping):
+                extra["_tel_kind"] = "towerlist"
+            hint = {k: mapping[k] for k in ("cell", "eci") if mapping.get(k)}
+            if hint:
+                extra["_tel_hdr"] = hint
+            if tmeta.get("section"):
+                extra["_section"] = tmeta["section"][:300]
         for fld in ("account", "counterparty"):
             v = f.get(fld)
             if v not in (None, ""):
                 ph = phone_from_cell(_txt(v) or "")
                 if ph:
                     phone_cells.append((_txt(v), ph))
+        for fld in ("orig", "term", "subject"):
+            v = tel.get(fld)
+            if v:
+                ph = phone_from_cell(v)
+                if ph:
+                    phone_cells.append((v, ph))
+        if tel.get("imsi") and re.fullmatch(r"\d{14,15}", tel["imsi"]):
+            phone_cells.append(("__imsi__" + tel["imsi"], tel["imsi"]))
     else:
         f = dict(rec.fields)
     if rec.note:
@@ -318,6 +360,19 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     tsv = f.get("ts")
     if tsv not in (None, ""):
         ts_raw = tsv.isoformat(sep=" ") if isinstance(tsv, (dt.datetime, dt.date)) else str(tsv)
+        do_assumed = False
+        m_do = _NUMDATE.match(ts_raw) if isinstance(tsv, str) else None
+        if m_do:     # day/month evidence over the WHOLE column (the scan only saw 200 rows)
+            a_do, b_do = int(m_do.group(1)), int(m_do.group(2))
+            evd = stats.setdefault("date_order_evidence", {}).setdefault(rec.table or "", [0, 0, None])
+            if a_do > 12 >= b_do:
+                evd[0] += 1
+                evd[2] = evd[2] or rec.loc
+            elif b_do > 12 >= a_do:
+                evd[1] += 1
+                evd[2] = evd[2] or rec.loc
+            elif ctx.tables.get(rec.table or "", {}).get("date_order_note") and a_do != b_do:
+                do_assumed = True
         r = ctx.parser(rec.table, column=is_table).parse(tsv)
         if r is None:
             stats["ts_failed"] += 1
@@ -330,6 +385,11 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
                 local = r.utc.astimezone(ctx.tz.tz) if basis.startswith(("source tz", "ASSUMED")) else r.utc
                 ts_utc = local.strftime("%Y-%m-%d")
                 basis = basis + " (date only)"
+            if do_assumed:
+                flag = ",".join(x for x in [flag, "date_order_assumed"] if x)
+            if any(not c.startswith("report-time line") for c in (ctx.cfg.get("tz_conflicts") or [])) \
+                    and basis.startswith(("source tz", "ASSUMED")):
+                flag = ",".join(x for x in [flag, "tz_conflict"] if x)
             stats["ts_parsed"] += 1
             stats["basis"][basis] += 1
             for fl in (flag or "").split(","):
@@ -369,17 +429,25 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     # account
     acct = _txt(f.get("account"), 300)
     abasis = None
+    tel_ = extra.get("_tel") or {}
+    if not acct and tel_.get("subject"):
+        acct, abasis = tel_["subject"], "phone the record is about (column '" + str(mapping.get("subject")) + "')"
     if not acct and ctx.default_account:
         acct, abasis = ctx.default_account, "source default"
     if acct and EMAIL_RE.fullmatch(acct):
         acct = acct.lower()
+    elif acct and (rec.table in ctx.tel_tables):
+        ph = phone_from_cell(acct)
+        if ph and ph != acct:
+            acct = ph                     # a target number written as 7035550101 / (703) 555-0101 -> +17035550101
+            abasis = (abasis + "; " if abasis else "") + "phone number normalised to E.164"
     action = _txt(f.get("action"), 500)
     status = apply_status(f.get("status"), action)
     dflt = tmeta.get("default_category", ctx.default_category) if tmeta else ctx.default_category
     if rec.cells is None and ts_utc is None:
         category = "other"   # a free-text line without a time is an attribute (e.g. 'Recovery SMS: ...'), not an event
     else:
-        category = categorize(action, status, dflt or None)
+        category = categorize(action, status, dflt or None, telecom=rec.table in ctx.tel_tables)
     stats["categories"][category] += 1
     raw = rec.raw if rec.raw is not None else ""
     if len(raw) > ctx.raw_max:
@@ -397,7 +465,8 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     }
     if rec.cells is not None:
         # identifiers from every cell except the time columns (they only add digits and colons)
-        skip = {mapping.get(k) for k in ("ts", "date", "time", "tz")}
+        skip = {mapping.get(k) for k in ("ts", "date", "time", "tz", "imsi", "lat", "lon", "azimuth", "beamwidth",
+                                         "duration")}
         id_text = " | ".join(str(v) for h, v in rec.cells.items() if h not in skip and v not in (None, ""))
         ids = extract_ids(id_text, imei_context=ctx.imei_ctx)
     else:
@@ -407,8 +476,13 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
         ids = [x for x in ids if not (x[0] in ("ipv4", "ipv6") and x[2] == ip)]
     have = {(k, n) for k, _r, n, _v in ids}
     for rawv, ph in phone_cells:
-        if ("phone", ph) not in have:
+        if rawv.startswith("__imsi__"):
+            if ("imsi", ph) not in have:
+                ids.append(("imsi", ph, ph, "format"))
+                have.add(("imsi", ph))
+        elif ("phone", ph) not in have:
             ids.append(("phone", rawv, ph, "format"))
+            have.add(("phone", ph))
     return ev, ids
 
 
@@ -416,7 +490,7 @@ def new_stats() -> dict:
     return {"rows": 0, "ts_parsed": 0, "ts_failed": 0, "ts_missing": 0, "ip_invalid": 0,
             "ts_failed_examples": [], "ip_invalid_examples": [], "nontable": 0, "skipped_lines": 0,
             "empty_pages": [], "basis": collections.Counter(), "flags": collections.Counter(),
-            "categories": collections.Counter()}
+            "categories": collections.Counter(), "date_order_evidence": {}}
 
 
 def _stats_json(st: dict) -> str:
@@ -532,6 +606,31 @@ def ingest_source(case, con, src: dict, prog=None, log=None, on_fraction: Option
         last_ck = {"rev": rev, "ti": ti + 1, "seq": seq, "reader": None, "pass_seq0": seq}
         flush()
     stats["empty_pages"] = sorted(set(stats["empty_pages"]))
+    changed = []
+    for t in cfg.get("tables", []):
+        if not t.get("date_order_note"):
+            continue
+        first_gt, second_gt, where = (stats.get("date_order_evidence") or {}).get(t.get("name") or "", [0, 0, None])
+        if first_gt and not second_gt:
+            t["date_order"], t["date_order_note"] = "DMY", ""
+            t["date_order_proof"] = f"day-first proven by the whole column (first field over 12 at {src['label']}:{where}); the 200-row sample alone could not tell"
+            changed.append(t.get("name"))
+        elif second_gt and not first_gt:
+            t["date_order"], t["date_order_note"] = "MDY", ""
+            t["date_order_proof"] = f"month-first proven by the whole column (second field over 12 at {src['label']}:{where})"
+            changed.append(t.get("name"))
+        elif first_gt and second_gt:
+            t["date_order_note"] = "inconsistent day/month order in the column (both fields exceed 12 in different rows); read as MM/DD - VERIFY"
+    if changed and not src.get("_reread"):
+        new_rev = rev + 1
+        con.execute("UPDATE sources SET config=?, config_rev=?, checkpoint=NULL WHERE id=?", (json.dumps(cfg), new_rev, src["id"]))
+        con.commit()
+        if log:
+            log.info("%s: day/month order proven by the whole column (%s); reading the file again", src["label"], ", ".join(map(str, changed)))
+        case.audit(con, "date_order_proven", {"source": src["label"], "tables": changed})
+        again = dict(src, config=json.dumps(cfg), config_rev=new_rev, checkpoint=None, _reread=True)
+        return ingest_source(case, con, again, prog, log, on_fraction)
+    con.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), src["id"]))
     con.execute("UPDATE sources SET status='ingested', ingested_rev=?, ingested_at=?, rows=?, stats=?, checkpoint=NULL WHERE id=?",
                 (rev, utc_now_str(), seq, _stats_json(stats), src["id"]))
     con.commit()

@@ -1,8 +1,9 @@
 # Spoor — offline subpoena-return analysis
 
 Spoor reads large legal-process returns (provider login logs, IP logs, subscriber records, exchange
-and bank records, CDR-style logs), analyses them for **IP addresses, timing, logins, links between
-accounts and identifiers**, and writes a **Markdown report in which every statement cites the exact
+and bank records, telecom call detail records and cell-site lists), analyses them for **IP addresses,
+timing, logins, links between accounts and identifiers, and calls, texts and cell sites across any
+number of telecom returns at once**, and writes a **Markdown report in which every statement cites the exact
 line, row, page or JSON path of the original file it comes from**. It runs entirely on this computer:
 no installation, no internet, no outbound connections.
 
@@ -61,8 +62,8 @@ To try it before using real returns: on the home page click **Try it on fictiona
    extracted with 7-Zip and the folder added instead.)
 3. **Run analysis.** Leave *AI-drafted summary* ticked if a local model is installed (section 5).
 4. Watch the trail across the top of the case: Hash → Map → Read → Index → Analyse → Report →
-   Verify → AI draft → Final. The report is written as soon as *Analyse* finishes, before the
-   slow AI stage, so you can start reading while the model works.
+   Figures → Verify → AI draft → Final. The report and its figures are written as soon as *Analyse*
+   finishes, before the slow AI stage, so you can start reading while the model works.
 5. **Check how each file was read** (Sources → click a file). Spoor shows the time zone it used and
    why, the day/month order, the account it attributed rows to, and which column it read as what.
    Change anything that is wrong, press **Preview how it will be read**, then **Save settings** and
@@ -98,7 +99,11 @@ Everything is in `cases\<case>\report\`:
 
 | File | Contents |
 |---|---|
-| `REPORT.md` | Start here. Case summary, the verified AI summary (if any), priority-1 findings, every category with charts. |
+| `REPORT.md` | Start here. BLUF, figures, a short narrative, the returns analysed, numbered references, then negative results and data notes in appendices. |
+| `REPORT-FULL.md` | The long form: every finding with its statement and evidence line. |
+| `CROSSREF.md` | Only when two or more returns are included: what they have in common, and nothing else. |
+| `FIGURES.md` | Each figure with its caption, what it leaves out, and a **sources table**: marker → finding → cited records → the read-only SQL behind it, plus the query that returns exactly what is drawn. |
+| `figures\FIG01-timeline.svg`, `figures\FIG02-links.svg` | The figures (section 6). Self-contained SVG: fonts embedded, no scripts, no links; open in any browser or Markdown viewer, or print. |
 | `FINDINGS.md` | Every finding (F001…): statement, tables, evidence citations and the read-only SQL that reproduces it. |
 | `EVIDENCE.md` | The records behind each finding, quoted verbatim from the original files. |
 | `SOURCES.md` | Every file: path, size, SHA-256, format, encoding, time zone and its basis, column mapping, parse statistics. |
@@ -106,7 +111,8 @@ Everything is in `cases\<case>\report\`:
 | `REVIEW.md` | Tick-box checklist: every assumption, anything not analysed, priority-1 findings to confirm, AI sentences removed or flagged. |
 | `METHODS.md` | Exactly how each analysis works, its parameters, data sources and limitations — for your report or testimony prep. |
 | `CITATION_CHECK.md` | The result of re-reading every cited record from the original files after the analysis. |
-| `exports\*.csv` | Full timeline, IP inventory, **IP/timestamp/port list for follow-on legal process**, link-chart edges/nodes for i2 or Gephi, identifiers, accounts, counterparties. |
+| `exports\*.csv` | Full timeline, IP inventory, **IP/timestamp/port list for follow-on legal process**, link-chart edges/nodes for i2 or Gephi, identifiers, accounts, counterparties. Telecom returns add `telecom_records.csv` (every call/text with its cell site and both citations), `telecom_contacts.csv`, `common_contacts.csv`, `target_overlap.csv` and `colocation.csv`. |
+| `exports\telecom.kml` | Telecom returns: cell sites with sector wedges, every located call/text per target (time-stamped for the Google Earth time slider), co-location occasions. Opens offline in Google Earth Pro, ArcGIS or QGIS; no icon or network links. |
 | `questions\Q###.md`, `lookups\L###.md` | Saved answers from Ask and Look up. |
 | `MANIFEST.sha256` | SHA-256 of every file in the report folder. |
 
@@ -163,9 +169,37 @@ returns. Set **CPU threads** to 8 (the P-cores).
 | Identifiers | every email, phone, Bitcoin/Ethereum/TRON/Litecoin/Dogecoin/Monero address, MAC, IMEI and URL, kept only when its checksum verifies (Base58Check, Bech32/Bech32m, EIP-55, Luhn) |
 | Counterparties | most frequent counterparties per account; largest amounts (totals only within one currency) |
 | Watchlists | hits against your own lists of IPs, ranges and identifiers (format in `watchlists\README.txt`; README files are not read as lists) |
+| Calls, texts & cell sites | for any number of telecom returns at once: per-target totals, top contacts and minutes; **direct contact between targets**; **numbers in contact with 2+ targets** and a target-by-target table of contacts in common; **IMEIs/IMSIs on 2+ targets** and handset/SIM changes in time order; **co-location** (two targets served by cell sites within 100 m within 15 minutes, across carriers by coordinates); **tower dumps** from any number of carriers grouped into scenes, with the **phones and handsets seen at 2+ scenes** and dump phones that are targets or their contacts; **contact chains** ("degrees of separation": targets linked only through other people, tower-dump phones linked to targets through a contact, and your own saved link groups; Links screen); timing-advance and ping location estimates; the KML; how every record was read and located |
 
 Thresholds (burst size, gap length, windows…) are under **Settings → Analysis settings** and are
 recorded in each case's `METHODS.md`.
+
+### Figures
+
+Spoor draws its figures for every report itself, from the findings - no language model is involved, and
+the same findings always give byte-identical files. Every mark carries the finding it comes from
+(F001…, as visible text or a numbered marker and as a tooltip); `FIGURES.md` lists each figure's sources.
+
+| Figure | What it shows |
+|---|---|
+| 1. Activity timeline | One lane per account: activity records (the TIMELINE data) per UTC hour, day, week or month - whichever fits - with your local zone as a second scale. Long silences are cut from the axis and labelled with their length. Numbered markers in the accent colour are priority-1 events (failed-login bursts, account changes from a new IP, rapid network switches, the closest co-use of linked accounts) at their first cited record; a key lists them. |
+| 2. Account–IP link chart | One panel per group of accounts linked by shared IPs: the shared IPs in the middle, the accounts either side, each line labelled with that account's number of records on that IP. The closest co-use the finding reports is the only thing in the accent colour. |
+| 3. Target–contact chart | Telecom returns: the target numbers either side; in the middle every number in contact with two or more targets, and each pair of targets in direct contact (dashed box). Each line is labelled with that target's records with that number. The contact shared by the most targets is the only accent. Co-location occasions are also marked on figure 1. |
+
+![Activity timeline drawn from the fictional demo returns](docs/FIG01-timeline.svg)
+
+![Account–IP link chart drawn from the fictional demo returns](docs/FIG02-links.svg)
+
+![Target–contact chart drawn from the fictional telecom demo returns](docs/FIG03-contacts.svg)
+
+Limits (accounts, markers, linked groups and IPs per figure) are under **Analysis settings**; any limit
+that applies is printed on the figure with a pointer to the CSV holding the rest. Labels too long for
+their box are shortened with "…" on the figure and given in full in the tooltip and the sources table.
+Every time a figure is drawn it is checked automatically: 4 px grid, hairlines, one accent colour,
+no scripts or links, every label inside its box, no overlapping text. In the dashboard, click a
+marker or a line label to open the cited record, or a lane name to open its finding. A figure that
+fails is listed in `REVIEW.md` and does not stop the run; `REVIEW.md` also has a tick-box per figure
+to compare it against `FINDINGS.md` before it goes into a briefing.
 
 **Look up** (no AI) shows everything about an IP or CIDR range, an account, an identifier, any text,
 or a time window, with citations, and saves it as Markdown.
@@ -193,6 +227,24 @@ tables, and key/value layouts such as some providers' records pages), PDF (text 
 **scanned pages are listed as not analysed — no OCR**), plain text and logs (Apache/Nginx, mbox),
 and ZIP (extracted into the case folder; each member hashed and cited separately).
 
+*Telecom returns:* call detail records, tower dumps, timing-advance and ping reports, and cell-site
+(tower) lists are recognised from their columns - originating/terminating numbers (or other party +
+direction), call type, duration, first/last cell or sector, eNodeB, ECI / ECGI / LTE_CI / CGI, IMEI, IMSI,
+and coordinates on each row when a carrier writes them. Report text files with several tables (a voice and
+a data table, one section per tower-dump search) are read table by table. Every LTE cell is reduced to its
+ECI (eNodeB x 256 + cell) however it is written - decimal, hex ECGI, MCC-MNC-eNodeB-cell, eNodeB + sector
+column, or AT&T's bracketed CellLocation - and matched to tower lists on that, preferring the list in the same
+folder (the same carrier). Spoor ships no carrier tower lists, but if you have them you can keep them in a
+`cellsites/` folder next to the program (`spoor-cli.bat cellsites index`, see `cellsites\README.txt`): records
+the return's own lists don't place are then looked up there by ECI in the right carrier's list (from the
+case setting or the return's file name), cited to the list file and row. The target is the account column, else the number named in the preamble, else the
+number in the file name (carriers name call-record files after the target), else the number on one end of
+80%+ of the records; the last two are priority-1 assumptions to verify. Timing-advance reports, named after
+the IMSI, are filed under the number whose call records show that IMSI. Numbers are compared in E.164
+(+17035550101), IMEIs on their first 14 digits. A record's location is the cell site that served it, not the
+phone; timing-advance and ping positions are kept apart as estimates of the device position. Check every
+mapping under Sources → the file; `REVIEW.md` lists each telecom table's columns for you to confirm.
+
 *Proximity pairing:* in free text where an IP and its time sit on different lines (HTML key/value
 pages), an IP line is paired with the nearest timestamp line within 6 lines, never across another
 IP line. Such records cite every line used and are flagged `paired_by_proximity` for review.
@@ -204,12 +256,15 @@ IP line. Such records cite every line used and are flagged `paired_by_proximity`
 ```
 spoor-cli new "Case name" --examiner "SA ..." --tz America/New_York
 spoor-cli add "Case name" D:\Returns\Google
-spoor-cli run "Case name"            (background; add --no-llm, --wait, --accounts N)
+spoor-cli run "Case name"            (background; add --no-llm, --no-figures, --wait, --accounts N)
 spoor-cli status "Case name" --watch
 spoor-cli cancel "Case name"
 spoor-cli lookup "Case name" --ip 198.51.100.0/24 --from 2024-04-01 --to 2024-04-30
 spoor-cli ask "Case name" "Which IPs logged in to x@example.com in April 2024?"
 spoor-cli report "Case name"         (rewrite the Markdown from current results)
+spoor-cli figures "Case name"        (redraw the figures from current results, then rewrite the Markdown)
+spoor-cli returns "Case name" exclude R03 --reason "duplicate production"   (include / rename / move; list with no action)
+spoor-cli links "Case name" 7035550201 5715550206 dump:S08 --hops 6 [--save "BG1-BG6"]
 spoor-cli selftest
 ```
 
@@ -229,6 +284,8 @@ the 400,000-row test), which leaves room for the model on a 16 GB machine.
   and the ASN/country data are all in this folder.
 - The dashboard listens on 127.0.0.1 only and requires a per-launch token (the link Spoor opens),
   checks the Host header and refuses cross-site requests.
+- Figures are self-contained SVG files: their fonts are embedded and they contain no scripts and no
+  links. The dashboard shows them inline only after stripping anything active, as a second guard.
 - Source files are opened read-only and never modified; each is hashed before reading and re-hashed
   after the analysis (`CITATION_CHECK.md`, `SOURCES.md`). Every action (files added, mappings changed,
   jobs, AI calls) is logged in `logs\audit.log` and the case database, including the full prompts and
@@ -260,10 +317,15 @@ Spoor\
   geoip\            offline ASN and country data (DB-IP Lite, CC BY 4.0)
   watchlists\       optional lists checked in every case
   demo\returns\     fictional returns used by the self-test and the demo case
+  demo\telecom\     fictional call detail records and cell-site lists (three carriers, four targets)
+  demo\carrier_layouts\  fictional returns in US carriers' layouts (mediation, VoLTE, report text, HDA,
+                    tower dumps, timing advance, pings) - used by the self-test
+  docs\             the example figures shown in this README (drawn from the demo returns)
   cases\            your cases (created on first use)
   tests\            developer tests (python tests\run_tests.py)
   LICENSES\         third-party licenses
-  build\            (repository only) fetch_deps.py, package.py, requirements-vendor.txt
+  build\            (repository only) fetch_deps.py, package.py, make_docs_figures.py,
+                    make_fontmetrics.py, requirements-vendor.txt
 ```
 
 In the repository, `runtime\`, `vendor\`, the `geoip\*.mmdb` files and `PROGRAM.sha256` are not
@@ -282,8 +344,9 @@ python build/package.py         # PROGRAM.sha256 + dist/Spoor-<version>.zip + di
 `fetch_deps.py --no-geoip` skips the network data (then follow `geoip/README.txt`). The build is
 reproducible: the runtime, vendored libraries and DB-IP files it fetches are byte-identical to the
 ones in the 1.0.0 release, and CI builds the package on every push. Tests: `python tests/run_tests.py`
-(units, the 51-check self-test, dashboard/API and security checks; no Windows needed).
+(units, figures - determinism, resume, coverage, layout and stress cases - the self-test, dashboard/API
+and security checks; no Windows needed). `python build/make_docs_figures.py` redraws the README figures.
 
-Spoor 1.0.0. Third-party components and their licenses: `LICENSES/THIRD-PARTY.txt`. Spoor itself is
+Spoor 1.1.0 in development (current release 1.0.0). Third-party components and their licenses: `LICENSES/THIRD-PARTY.txt`. Spoor itself is
 Apache-2.0 (`LICENSE`). A companion tool for server images, [Gumshoe](https://github.com/TastyT0rtuga/gumshoe),
 shares the same local-model setup.

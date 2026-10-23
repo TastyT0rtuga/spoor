@@ -1,0 +1,7 @@
+Northline Wireless - Law Enforcement Relations
+FICTIONAL DEMO RETURN - no real subscriber
+Target Number: 7035550401
+
+Item,Conn. Date/Time (UTC),Originating Number,Terminating Number,Elapsed Time,Call Type,IMEI,IMSI,First Cell,Last Cell
+1,05/13/2024 10:00:00,7035550401,5715550499,00:01:00,Voice,000000000000000,001010000000401,CELL-7,CELL-7
+2,05/14/2024 10:00:00,7035550401,5715550498,00:01:00,Voice,000000000000000,001010000000401,CELL-9,CELL-9
