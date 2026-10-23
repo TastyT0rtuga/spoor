@@ -696,6 +696,123 @@ def dbm_meta(con, key):
     return dbm.get_meta(con, key) or {}
 
 
+def review_regressions():
+    """Every confirmed finding of the three independent reviews (brief sections 10-13) as a regression test."""
+    import json as _json
+    FX = ROOT / "tests" / "review_fixtures"
+    tmp = Path(tempfile.mkdtemp(prefix="spoor-review-"))
+
+    def case(name, tz="UTC"):
+        c, con = _figure_case(tmp / name, f"rv-{name}", FX / name, tz=tz, params={"figures": False})
+        return c, con
+
+    def evs(con):
+        return [dict(zip(("cite", "ts_utc", "ip", "flag", "action"), r)) for r in con.execute(
+            "SELECT s.label || ':' || e.loc, e.ts_utc, e.ip, e.ts_flag, e.action FROM events e JOIN sources s ON s.id=e.source_id ORDER BY e.id")]
+
+    def kinds(con):
+        return [r[0] for r in con.execute("SELECT kind FROM findings WHERE fid IS NOT NULL")]
+
+    def cfg(con):
+        return _json.loads(con.execute("SELECT config FROM sources WHERE status != 'container' ORDER BY id").fetchone()[0])
+
+    # --- pairing (review #1 F-04 variant, #2 G-F3, #3 SR-03)
+    _c, con = case("f04b")
+    got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
+    ok(got == {"192.0.2.1": "2024-01-01 10:00:00", "192.0.2.5": "2024-01-01 11:00:00", "192.0.2.9": "2024-01-01 12:00:00"},
+       f"time-first key/value layout: every IP keeps its own record's time ({got})")
+    _c, con = case("g03")
+    got = {e["ip"]: (e["ts_utc"], e["action"]) for e in evs(con) if e["ip"]}
+    ok(got.get("198.51.100.10") == ("2026-05-01 01:00:00", "Action: Login Success") and got.get("198.51.100.20", ("",))[0] == "2026-05-01 02:00:00",
+       "time / action / browser / IP blocks: the password change stays with its own IP")
+    _c, con = case("f04")
+    got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
+    ok(got.get("192.0.2.5") is None and got.get("192.0.2.9") == "2024-01-01 11:00:00", "an IP whose record has no time stays unpaired; the next record is not shifted")
+    from spoor.readers.textmode import TextModeExtractor
+    ex = TextModeExtractor(window=6)
+    lines = ["Time: 2024-01-01 10:00:00 UTC", "IP Address: 192.0.2.1", "Time: 2024-01-01 11:00:00 UTC"]
+    recs = [r for i, t in enumerate(lines, 1) for r in ex.feed(f"L{i}", i, 0, len(t), t)] + list(ex.finish())
+    ok(any(r.fields.get("ip") == "192.0.2.1" and r.fields.get("ts", "").startswith("2024-01-01 10:00") for r in recs),
+       "keyed record: the time of the IP's own record wins over the next record's at the same distance")
+    ex = TextModeExtractor(window=6)
+    lines = ["2024-01-01 10:00:00 login", "192.0.2.7", "2024-01-01 11:00:00 logout"]
+    recs = [r for i, t in enumerate(lines, 1) for r in ex.feed(f"L{i}", i, 0, len(t), t)] + list(ex.finish())
+    ok(any(r.fields.get("ip") == "192.0.2.7" and not r.fields.get("ts") and "not paired" in r.note for r in recs),
+       "unkeyed text: a time before and after at the same distance is a tie - not paired, and says so")
+    # --- day/month order (review #1 F-03, #2 G-F7, #3 SR-02) and date-only (#2 Q14.3)
+    _c, con = case("g07")
+    t0 = cfg(con)["tables"][0]
+    rng = tuple(con.execute("SELECT COUNT(ts_utc), MIN(ts_utc), MAX(ts_utc) FROM events").fetchone())
+    ok(t0["date_order"] == "DMY" and rng == (260, "2026-05-01 00:00:00", "2026-05-13 14:10:00") and "gap" not in kinds(con),
+       f"day-first proven by a row past the 200-row sample: file read again as DD/MM, no false gaps ({rng})")
+    _c, con = case("f03")
+    flagged = [e for e in evs(con) if "date_order_assumed" in (e["flag"] or "")]
+    ok(len(flagged) == 5 and "flag_date_order_assumed" in kinds(con), "unproven day/month order: each ambiguous event flagged")
+    ok(not con.execute("SELECT COUNT(*) FROM findings WHERE kind IN ('failed_burst','gap')").fetchone()[0],
+       "events with an assumed day/month order take no part in timing findings")
+    _c, con = case("g14")
+    ok("failed_burst" not in kinds(con), "date-only failed logins make no '0-second' burst")
+    # --- timezone (review #1 F-01/F-02, #2 G-F6/Q2, #3 SR-01)
+    _c, con = case("f01")
+    c1 = cfg(con)
+    ok(c1["tz"] == "UTC" and not c1["tz_assumed"], "a sentence saying the times are UTC beats a 'Generated ... PST' line")
+    ok(evs(con)[0]["ts_utc"] == "2024-04-02 03:00:00", "times stated as UTC are not shifted by the report-time line")
+    _c, con = case("f02a")
+    ok(cfg(con)["tz_assumed"] is True and "China" in cfg(con)["tz_basis"], "header (CST) alone: zone ASSUMED, both meanings named")
+    _c, con = case("f02b")
+    ok(cfg(con)["tz_assumed"] is True, "header (EST) alone: zone ASSUMED (fixed -05:00 or New York)")
+    _c, con = case("g06b")
+    ok(cfg(con)["tz"] == "UTC", "the timestamp column's own header decides, not another column's")
+    from spoor.timeparse import suggest_source_tz
+    r = suggest_source_tz([], [("L2", "Times in this report are UTC"), ("L3", "All times below are in PST")], "x.csv")
+    ok(r["assumed"] is True and r["conflicts"], "two data-scope statements naming different zones: ASSUMED, conflict listed")
+    # --- cell identity (review #1 F-05, #2 G-F1/F2/Q9, #3 SR-05)
+    from spoor.telecom import norm_imei, parse_eci
+    cases_eci = {"310260-2560001": 2560001, "311480-0c82216": 0x0C82216, "311480-1234567": 0x1234567, "48221-2": 48221 * 256 + 2,
+                 "145210-2": 145210 * 256 + 2, "0012345-1": 12345 * 256 + 1, "310260012344578": 12344578, "23415123456789": 123456789}
+    bad = {k: parse_eci(k)[0] for k, v in cases_eci.items() if parse_eci(k)[0] != v}
+    ok(not bad, f"ECI spellings: decimal unless hex is known, eNodeB-cell when the cell is under 256 ({bad or 'all right'})")
+    ok(norm_imei("000000000000000")[0] is None and norm_imei("111111111111111")[0] is None, "placeholder IMEIs are not handsets")
+    # --- co-location by label only (review #1 F-06, #2 G-F10, #3 SR-06)
+    _c, con = case("samecell")
+    ok("telecom_colocation" not in kinds(con) and "telecom_same_cell" in kinds(con) and "telecom_shared_imei" not in kinds(con),
+       "same cell label without coordinates: a 'same cell label' note, not co-location; all-zero IMEI links nobody")
+    # --- placeholder accounts and usernames across providers (review #1 F-09, #2 G-F9, #3 SR-10)
+    # (kept as a known gap until the cross-return identity fix: recorded, not asserted)
+    # --- negatives (review #1 F-13) - recorded until the negatives fix
+    # --- reproduce queries (review #1 F-08, #2 G-F8, #3 SR-09)
+    for db in [p for p in tmp.rglob("case.db")]:
+        cn = __import__("sqlite3").connect(db)
+        fails = cn.execute("SELECT value FROM meta WHERE key='sql_failures'").fetchone()
+        ok(not fails or _json.loads(fails[0]) == [], f"{db.parent.name}: every evidence-backed reproduce query runs and returns rows")
+    # --- failed module surfaces (review #3 SR-08)
+    import spoor.analyses.watchlist as W
+    orig = W.Watchlist.run
+    W.Watchlist.run = lambda self: (_ for _ in ()).throw(RuntimeError("injected failure"))
+    try:
+        c, con = _figure_case(tmp / "injected", "rv-injected", FX / "f01", tz="UTC", params={"figures": False})
+    finally:
+        W.Watchlist.run = orig
+    from spoor.jobs import status_text
+    rep = (c.report_dir / "REPORT.md").read_text(encoding="utf-8")
+    ok("FAILED" in status_text(c, con, markdown=False) and "ANALYSIS FAILED" in rep and "Watchlist" in (c.report_dir / "REVIEW.md").read_text(encoding="utf-8"),
+       "a module that fails is named in spoor status, the BLUF limits and REVIEW.md")
+    # --- verifier (review #1 F-11, #2 G-F5/Q7, #3 SR-04)
+    from spoor.verify import FactBase, check_sentence
+    fb = FactBase([{"id": "F001", "title": "x", "statement": "5 accounts are linked: a1, a2, a3, a4, a5. The closest co-use: a1 and a2 on IP 203.0.113.9.",
+                    "values": {"accounts": ["a1", "a2", "a3", "a4", "a5"], "closest_ip": "203.0.113.9"},
+                    "tables": [{"rows": [["a1", "a2", 1, "203.0.113.9"], ["a3", "a4", 1, "198.51.100.4"]]}]},
+                   {"id": "F002", "title": "y", "statement": "Targets 7035550101 and 5715550102 were in direct contact: 6 records (4 calls, 2 texts).",
+                    "values": {"calls": 4, "texts": 2}}])
+    acc = {"a1", "a2", "a3", "a4", "a5"}
+    for t, want in [("a3 used IP 203.0.113.9 [F001].", "rejected"), ("a1 and a2 used IP 203.0.113.9 [F001].", "accepted"),
+                    ("a1 never used IP 203.0.113.9 [F001].", "rejected"), ("a3 changed the password from IP 198.51.100.4 [F001].", "rejected"),
+                    ("Targets 7035550101 and 5715550102 were in direct contact: 4 texts and 2 calls [F002].", "rejected"),
+                    ("Targets 7035550101 and 5715550102 were in direct contact: 4 calls and 2 texts [F002].", "accepted")]:
+        st, *_ = check_sentence(t, ["F001", "F002"], fb, acc)
+        ok(st == want, f"verifier {want}: {t}")
+
+
 def web_smoke():
     tmp = Path(tempfile.mkdtemp(prefix="spoor-web-"))
     os.environ["SPOOR_CASES"] = str(tmp / "cases")
@@ -761,6 +878,8 @@ def main():
     telecom_tests()
     print("\n[carrier layouts]")
     carrier_layout_tests()
+    print("\n[independent review regressions]")
+    review_regressions()
     print("\n[contact chains]")
     links_tests()
     print("\n[returns, cross-reference, report]")

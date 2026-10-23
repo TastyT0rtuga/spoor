@@ -1,0 +1,13 @@
+Account Activity for jdoe@example.com
+
+IP Address: 192.0.2.1
+Time: 2024-01-01 10:00:00 UTC
+Action: login
+IP Address: 192.0.2.5
+Action: login
+IP Address: 192.0.2.9
+Time: 2024-01-01 11:00:00 UTC
+Action: login
+IP Address: 192.0.2.13
+Time: 2024-01-01 12:00:00 UTC
+Action: login

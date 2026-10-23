@@ -1,0 +1,8 @@
+Example Provider - Login Activity
+Generated 2024-05-01 10:00 PST
+All times below are UTC.
+
+Timestamp,IP Address,Account,Action
+2024-04-02 03:00:00,203.0.113.10,jdoe@example.com,Login
+2024-04-02 03:05:00,203.0.113.11,jdoe@example.com,Login
+2024-07-02 03:05:00,203.0.113.12,jdoe@example.com,Login

@@ -204,10 +204,14 @@ class FactBase:
                     pass
             blob = " ".join(strings).lower()
             row_sets = []
-            vals = []
-            _walk_strings(it.get("values"), vals)
-            for rs in [vals + [it.get("statement") or ""]] + rows:
+            vals = []          # scalar values only: a list of accounts is not a statement that they did anything together
+            _walk_strings({k: v for k, v in (it.get("values") or {}).items() if not isinstance(v, (list, dict))}, vals)
+            # units in which values must occur TOGETHER: each table row, the finding's values, each sentence of the statement
+            for rs in [vals] + rows:
                 row_sets.append(" ".join(rs).lower())
+            for sent in re.split(r"(?<=[.;])\s+", it.get("statement") or ""):
+                if sent.strip():
+                    row_sets.append(sent.lower())
             self.items[it["id"]] = {"tok": tk, "nums": nums, "blob": blob, "rows": row_sets}
 
     def union(self, ids: list[str]) -> dict:
@@ -224,6 +228,19 @@ class FactBase:
         dates = set(tk.dates) | {d[:10] for d in tk.datetimes}
         return {"tok": tk, "nums": nums, "blob": " ".join(blobs), "rows": rows, "dates": dates,
                 "years": {d[:4] for d in dates} | set(tk.years), "months": {d[:7] for d in dates} | set(tk.months)}
+
+
+NEG_RE = re.compile(r"\b(?:never|not|no|none|neither|nor|without|didn't|did not|wasn't|weren't|isn't|aren't|hasn't|haven't|cannot|can't)\b")
+COUNT_RE = re.compile(r"(?<![\d.:/-])(\d[\d,]*)\s+(?:[a-z-]+\s+){0,2}?(calls?|texts?|messages?|records?|failed logins?|logins?|accounts?|ips?|"
+                      r"ip addresses|addresses|events?|transactions?|contacts?|occasions?|hops?|returns?|days?|targets?|numbers?|sessions?)\b")
+
+
+ACTION_RE = re.compile(r"\b(password|passcode|2-step|two-step|2fa|two-factor|mfa|recovery (?:e-?mail|phone)|withdraw\w*|deposit\w*|"
+                       r"deleted|disabled|enabled|reset)\b")
+
+
+def _has(x: str, unit: str) -> bool:
+    return re.search(r"(?<![\w.@-])" + re.escape(x) + r"(?![\w@-]|\.\d)", unit) is not None
 
 
 def _num_ok(n, allowed: set) -> bool:
@@ -329,6 +346,34 @@ def check_sentence(text: str, cites: list[str], fb: FactBase, known_accounts: se
     ents = [ip for ip in st.ips] + [x.split(":", 1)[1] for x in st.idents]
     if known_accounts:
         ents += [a.lower() for a in known_accounts if re.search(r"(?<![\w.@-])" + re.escape(a.lower()) + r"(?![\w@-])", clean.lower())]
+    # relations: every two entities named in the sentence must occur together in ONE row, value set or sentence of a
+    # cited finding ("account A used IP X" is not supported by a finding that lists A and X in different places)
+    ul = list(dict.fromkeys(e.lower() for e in ents))
+    for i in range(len(ul)):
+        for j in range(i + 1, len(ul)):
+            if not any(_has(ul[i], r) and _has(ul[j], r) for r in allowed["rows"]):
+                reasons.append(f"{ul[i]} and {ul[j]} do not appear together in any record of the cited findings")
+    # an account-security action ('changed the password', 'disabled 2-step') must be stated with that entity
+    for act in ACTION_RE.findall(low):
+        stem = act.split()[0][:6]
+        if ul and not any(stem in r and any(_has(e, r) for e in ul) for r in allowed["rows"]):
+            reasons.append(f"'{act}' is not stated for {', '.join(ul[:3])} in the cited findings")
+    # negation: 'never', 'not', 'no' ... only when a cited finding itself says it
+    neg = NEG_RE.findall(low)
+    if neg and not any(NEG_RE.search(fb.items[c]["blob"]) for c in valid if c in fb.items):
+        reasons.append(f"'{neg[0].strip()}' - the cited findings do not state a negative")
+    # counts bound to what they count: '4 texts' must be a count of texts in a cited finding
+    for mm in COUNT_RE.finditer(clean.lower()):
+        num, noun = mm.group(1), mm.group(2)
+        if re.search(r"\b(?:about|around|approximately|roughly|nearly|almost|over|more than|less than|fewer than|under|some|at least|at most|up to)\s*$",
+                     clean.lower()[max(0, mm.start() - 20):mm.start()]):
+            continue          # an approximate count is checked by the number rule above
+        n = num.replace(",", "")
+        stem = noun.rstrip("s")
+        if not any(re.search(r"(?<![\d.])" + re.escape(n) + r"\s+(?:[a-z-]+\s+){0,2}?" + re.escape(stem), r.replace(",", "")) or
+                   re.search(r"\b" + re.escape(stem) + r"s?\W{1,3}" + re.escape(n) + r"\b", r.replace(",", ""))
+                   for r in allowed["rows"]):
+            reasons.append(f"'{num} {noun}' - no cited finding counts {noun} as {num}")
     vals = [d for d in st.datetimes] + [n[1].replace(",", "") for n in st.numbers if not n[4]]
     if ents and len(ents) + len(vals) >= 2 and not reasons:
         need = [e.lower() for e in ents] + [v.lower() for v in vals]

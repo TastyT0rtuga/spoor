@@ -1,0 +1,9 @@
+Account: alpha@example.test
+Time: 2024-05-01 10:00:00 UTC
+Action: login failed
+IP Address: 203.0.113.10
+Time:
+Action: login succeeded
+IP Address: 198.51.100.20
+Time: 2024-05-01 10:05:00 UTC
+Action: password reset
