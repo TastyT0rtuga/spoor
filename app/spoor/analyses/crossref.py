@@ -8,6 +8,7 @@ CROSSREF.md page lists those findings next to these."""
 from __future__ import annotations
 
 import csv
+import re
 import itertools
 
 from ..findings import plural
@@ -15,18 +16,29 @@ from ..identifiers import KIND_LABELS
 from .base import ATTR_SQL, T, Analysis, sq
 
 # which kinds are listed first (stronger evidence of a common actor) - a listing order, not a judgement
-KIND_ORDER = {"account": 0, "email": 1, "phone": 2, "btc": 3, "eth": 3, "ltc": 3, "trx": 3, "xmr": 3, "doge": 3, "imei": 4, "imsi": 4,
+KIND_ORDER = {"account": 0, "username": 6, "email": 1, "phone": 2, "btc": 3, "eth": 3, "ltc": 3, "trx": 3, "xmr": 3, "doge": 3, "imei": 4, "imsi": 4,
               "mac": 5, "ip": 6, "counterparty": 7, "url": 9}
+# account / counterparty strings that are a provider's filler, not an identity - never matched across returns
+PLACEHOLDERS = {"", "-", "--", "0", "unknown", "n/a", "na", "none", "null", "nil", "guest", "user", "admin", "administrator", "default",
+                "system", "anonymous", "test", "redacted", "not available", "not provided", "undefined"}
+_PH_SQL = "(" + ", ".join("'" + x.replace("'", "''") + "'" for x in sorted(PLACEHOLDERS)) + ")"
+
+
+def _placeholder(v) -> bool:
+    v = (v or "").strip().lower()
+    return v in PLACEHOLDERS or bool(re.fullmatch(r"\d{1,6}", v)) or not re.search(r"[a-z0-9]", v)
+
+
 J = "JOIN sources s ON s.id=e.source_id JOIN returns r ON r.id=s.return_id"
 # reproduces the list of overlapping items from the read-only views (ev, ids carry the return label in `ret`)
 ALL_SQL = ("SELECT 'ip' AS kind, ip AS value, COUNT(DISTINCT ret) AS returns, GROUP_CONCAT(DISTINCT ret) AS return_labels FROM ev "
            "WHERE ip IS NOT NULL AND ip_class IN ('public','documentation') GROUP BY ip HAVING COUNT(DISTINCT ret) >= 2 "
            "UNION ALL SELECT 'account', lower(account), COUNT(DISTINCT ret), GROUP_CONCAT(DISTINCT ret) FROM ev "
-           "WHERE account IS NOT NULL GROUP BY lower(account) HAVING COUNT(DISTINCT ret) >= 2 "
+           "WHERE account IS NOT NULL AND lower(trim(account)) NOT IN " + _PH_SQL + " GROUP BY lower(account) HAVING COUNT(DISTINCT ret) >= 2 "
            "UNION ALL SELECT kind, value, COUNT(DISTINCT ret), GROUP_CONCAT(DISTINCT ret) FROM ids "
            "WHERE kind NOT IN ('ipv4','ipv6') GROUP BY kind, value HAVING COUNT(DISTINCT ret) >= 2 "
            "UNION ALL SELECT 'counterparty', lower(counterparty), COUNT(DISTINCT ret), GROUP_CONCAT(DISTINCT ret) FROM ev "
-           "WHERE counterparty IS NOT NULL GROUP BY lower(counterparty) HAVING COUNT(DISTINCT ret) >= 2 ORDER BY 3 DESC, 1, 2")
+           "WHERE counterparty IS NOT NULL AND lower(trim(counterparty)) NOT IN " + _PH_SQL + " GROUP BY lower(counterparty) HAVING COUNT(DISTINCT ret) >= 2 ORDER BY 3 DESC, 1, 2")
 
 
 class CrossRef(Analysis):
@@ -35,6 +47,7 @@ class CrossRef(Analysis):
 
     def run(self):
         self.rows = []       # every overlapping item (all of them go to the CSV)
+        self.placeholders = set()
         if not self.multi:
             return
         self.msg("items present in more than one return")
@@ -50,11 +63,16 @@ class CrossRef(Analysis):
             self.rows.append(self.entity("ip", v, v, "e.ip=?", (v,), f"SELECT ret, cite, ts_utc, account, category, action FROM ev WHERE ip={sq(v)} ORDER BY ts_utc"))
         self.nonattr = self.one(f"SELECT COUNT(*) FROM (SELECT e.ip FROM events e {J} WHERE e.ip IS NOT NULL AND e.ip_class NOT IN {ATTR_SQL} "
                                 f"GROUP BY e.ip HAVING COUNT(DISTINCT s.return_id) >= 2)") or 0
-        # accounts (case-insensitive)
+        # accounts (case-insensitive). Placeholders never match; an email address or phone number is an account identity,
+        # a bare username is only the same string - reported as such (reviews #1 F-09, #2 G-F9, #3 SR-10)
         for (v,) in self.con.execute(f"SELECT lower(e.account) FROM events e {J} WHERE e.account IS NOT NULL "
                                      f"GROUP BY lower(e.account) HAVING COUNT(DISTINCT s.return_id) >= 2"):
+            if _placeholder(v):
+                self.placeholders.add(v)
+                continue
             shown = self.one("SELECT account FROM events WHERE lower(account)=? ORDER BY ts_epoch IS NULL, ts_epoch, id LIMIT 1", (v,)) or v
-            self.rows.append(self.entity("account", v, shown, "lower(e.account)=?", (v,),
+            strong = bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", v) or re.fullmatch(r"\+\d{10,15}", v))
+            self.rows.append(self.entity("account" if strong else "username", v, shown, "lower(e.account)=?", (v,),
                                          f"SELECT ret, cite, ts_utc, account, category, action FROM ev WHERE lower(account)={sq(v)} ORDER BY ts_utc"))
         # identifiers other than IPs
         for kind, norm in self.con.execute("SELECT i.kind, i.norm FROM identifiers i JOIN sources s ON s.id=i.source_id "
@@ -65,6 +83,9 @@ class CrossRef(Analysis):
         # counterparties named in transactions / messages
         for (v,) in self.con.execute(f"SELECT lower(e.counterparty) FROM events e {J} WHERE e.counterparty IS NOT NULL "
                                      f"GROUP BY lower(e.counterparty) HAVING COUNT(DISTINCT s.return_id) >= 2"):
+            if _placeholder(v):
+                self.placeholders.add(v)
+                continue
             shown = self.one("SELECT counterparty FROM events WHERE lower(counterparty)=? ORDER BY ts_epoch IS NULL, ts_epoch, id LIMIT 1", (v,)) or v
             self.rows.append(self.entity("counterparty", v, shown, "lower(e.counterparty)=?", (v,),
                                          f"SELECT ret, cite, ts_utc, account, category, counterparty, amount, currency FROM ev WHERE lower(counterparty)={sq(v)} ORDER BY ts_utc"))
@@ -83,7 +104,8 @@ class CrossRef(Analysis):
                 "last": max((p["l"] for p in per if p["l"]), default=None)}
 
     def label(self, kind: str) -> str:
-        return {"ip": "IP address", "account": "account", "counterparty": "counterparty"}.get(kind) or KIND_LABELS.get(kind, kind)
+        return ({"ip": "IP address", "account": "account", "username": "username string", "counterparty": "counterparty"}.get(kind)
+                or KIND_LABELS.get(kind, kind))
 
     def n_kind(self, n: int, kind: str) -> str:
         w = self.label(kind)
@@ -120,7 +142,7 @@ class CrossRef(Analysis):
             return sum(v for k, v in d.items() if k in kinds)
 
         idk = set(KIND_LABELS) - {"ipv4", "ipv6"}
-        mrows = [[a, self.prov.name(a), b, self.prov.name(b), grp(d, {"ip"}), grp(d, {"account"}), grp(d, idk), grp(d, {"counterparty"}), sum(d.values())]
+        mrows = [[a, self.prov.name(a), b, self.prov.name(b), grp(d, {"ip"}), grp(d, {"account", "username"}), grp(d, idk), grp(d, {"counterparty"}), sum(d.values())]
                  for (a, b), d in sorted(pairs.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))]
         by_kind: dict = {}
         for r in self.rows:
@@ -137,6 +159,8 @@ class CrossRef(Analysis):
                         f"and were not counted." if self.nonattr else ""),
                      {"values": vals}, sql=ALL_SQL, priority=3, sort_key="9")
             return
+        ph = sorted(self.placeholders)
+        vals["placeholders_not_matched"] = ph
         kinds_txt = ", ".join(self.n_kind(n, k) for k, n in sorted(by_kind.items(), key=lambda kv: (KIND_ORDER.get(kv[0], 8), kv[0])))
         stmt = (f"{plural(len(self.rows), 'item')} appear in the records of two or more of the {len(labels)} returns: {kinds_txt}. "
                 f"{len(pairs)} of {n_pairs} {'pair' if n_pairs == 1 else 'pairs'} of returns share at least one item"
@@ -144,6 +168,12 @@ class CrossRef(Analysis):
         if self.nonattr:
             stmt += (f" {plural(self.nonattr, 'private, shared or reserved IP address', 'private, shared or reserved IP addresses')} "
                      f"{'appears' if self.nonattr == 1 else 'appear'} in several returns; such addresses say nothing about a common user and were not counted.")
+        if ph:
+            stmt += (f" Placeholder values that appear in several returns were not treated as matches: {', '.join(repr(x) for x in ph[:8])}"
+                     f"{' and more' if len(ph) > 8 else ''}.")
+        if by_kind.get("username"):
+            stmt += (" A username matched across returns is only the same name string; different services can have different people "
+                     "behind the same name.")
         self.add("crossref_summary", "Items present in more than one return", stmt,
                  {"values": vals, "tables": [{"title": "Pairs of returns that share items", "columns": ["return A", "name A", "return B", "name B", "IPs", "accounts", "identifiers", "counterparties", "total"],
                                               "rows": mrows[:60], "total_rows": len(mrows)}]},
@@ -164,7 +194,16 @@ class CrossRef(Analysis):
             stmt = (f"{what[0].upper() + what[1:]} {r['shown']} appears in {len(per)} returns: {tags}" +
                     (f"; {T(r['first'])} to {T(r['last'])}" if r["first"] else "") + "."
                     + (f" Accounts in those records: {', '.join(r['accounts'][:8])}{' and more' if len(r['accounts']) > 8 else ''}." if r["accounts"] and r["kind"] != "account" else ""))
-            prio = 1 if r["kind"] != "ip" or len(per) >= 3 else 2
+            if r["kind"] == "username":
+                variants = [x[0] for x in self.con.execute(
+                    f"SELECT DISTINCT e.account FROM events e {J} WHERE lower(e.account)=? ORDER BY 1", (r["key"],))]
+                stmt += (" This is the same name string only, not a confirmed common account: verify it is the same person "
+                         "(subscriber details, shared IPs or identifiers).")
+                if len(variants) > 1:
+                    stmt += f" The letter case differs between records: {', '.join(variants[:6])}."
+            prio = 1 if r["kind"] not in ("ip", "username") or len(per) >= 3 else 2
+            if r["kind"] == "username":
+                prio = 2
             self.add("crossref_item", f"{what} {r['shown']}: {len(per)} returns", stmt,
                      {"values": {"kind": r["kind"], "value": r["shown"], "returns": ", ".join(p["ret"] for p in per), "return_count": len(per),
                                  "records": r["records"], "first_utc": r["first"], "last_utc": r["last"], "accounts": r["accounts"]},

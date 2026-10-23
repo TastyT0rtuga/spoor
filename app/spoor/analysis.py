@@ -198,7 +198,7 @@ def bluf_items(rp, multi: bool, refs: RefBook) -> list[str]:
             items.append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
     cs = [f for f in by.get("returns", []) if f["kind"] == "crossref_summary"]
     if cs:
-        top = [f for f in by["returns"] if f["kind"] == "crossref_item"][:4]
+        top = [f for f in by["returns"] if f["kind"] == "crossref_item" and B._v(f).get("kind") != "username"][:4]
         cv = B._v(cs[0])
         s = (f"{cv['items']} item{'s' if cv['items'] != 1 else ''} appear in two or more of the {cv['return_count']} returns; "
              f"{cv['pairs_with_overlap']} of {cv['pairs_compared']} pairs of returns share at least one.")
@@ -269,18 +269,25 @@ def returns_table(rp) -> list[str]:
 def appendix_nulls(rp) -> list[str]:
     nulls = null_results(rp.case, rp.con, rp.p)
     L = ["## Appendix A - Negative results", "",
-         "Checks that were run and found nothing. They are kept here so the main text is only what the records show. "
-         "Each entry gives the SQL that reproduces the check (run it in the dashboard's Look up / Ask screens or any SQLite viewer against `case.db`).", ""]
+         "Checks that were run and found nothing, and checks that could not be run on this data (and why). They are kept here "
+         "so the main text is only what the records show. Each entry gives the SQL that reproduces it (run it in the dashboard's "
+         "Look up / Ask screens or any SQLite viewer against `case.db`).", ""]
     if not nulls:
         return L + ["- Every check that applies to this data produced a finding.", ""]
-    area = None
-    for n in nulls:
-        if n["area"] != area:
-            area = n["area"]
-            L += ["", f"**{area}**", ""]
-        L.append(f"- **{md_escape(n['title'])}.** {md_escape(n['statement'])}")
-        L.append(f"  <details><summary>reproduce</summary>\n\n  ```sql\n  {n['sql']}\n  ```\n\n  </details>")
-    L.append("")
+    for state, head in (("none observed", "Checked - nothing found"), ("partly testable", "Checked - nothing found, with a limit"),
+                        ("not testable", "Could not be checked on this data")):
+        part = [n for n in nulls if n.get("state", "none observed") == state]
+        if not part:
+            continue
+        L += [f"### {head}", ""]
+        area = None
+        for n in part:
+            if n["area"] != area:
+                area = n["area"]
+                L += ["", f"**{area}**", ""]
+            L.append(f"- **{md_escape(n['title'])}.** {md_escape(n['statement'])}")
+            L.append(f"  <details><summary>reproduce</summary>\n\n  ```sql\n  {n['sql']}\n  ```\n\n  </details>")
+        L.append("")
     return L
 
 
@@ -373,7 +380,8 @@ def write_analysis(rp) -> Path:
           "- [CROSSREF.md](CROSSREF.md) - items present in more than one return (positive overlaps only)",
           "- [FINDINGS.md](FINDINGS.md) · [EVIDENCE.md](EVIDENCE.md) · [SOURCES.md](SOURCES.md) · [TIMELINE.md](TIMELINE.md) · [FIGURES.md](FIGURES.md) · [METHODS.md](METHODS.md) · [REVIEW.md](REVIEW.md) · [CITATION_CHECK.md](CITATION_CHECK.md)",
           "- `exports/` - CSV (and for telecom: KML, GeoJSON); `MANIFEST.sha256` - SHA-256 of every file here"
-          + (f"; citation check: {fmt_int(cc.get('pass', 0))} of {fmt_int(cc.get('total', 0))} cited records re-read and matched" if cc else ""), ""]
+          + (f"; source text re-read: {fmt_int(cc.get('pass', 0))} of {fmt_int(cc.get('total', 0))} cited records found in the original files with the stored values "
+             "(this confirms the records exist and say what was stored; it does not confirm the timezone, day/month order, column mapping or the conclusions)" if cc else ""), ""]
     p = rp.out / "REPORT.md"
     p.write_text("\n".join(L) + "\n", encoding="utf-8")
     return p

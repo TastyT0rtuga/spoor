@@ -152,6 +152,9 @@ def _shared_ident(f, v, multi):
 
 
 def _crossref_item(f, v, multi):
+    if v["kind"] == "username":
+        return (f"Username string {v['value']} is in {v['return_count']} returns ({v['returns']}); the same name only, "
+                f"not a confirmed common account.")
     kind = {"ip": "IP", "account": "Account", "counterparty": "Counterparty"}.get(v["kind"])
     if kind is None:
         from .identifiers import KIND_LABELS

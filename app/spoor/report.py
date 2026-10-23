@@ -557,8 +557,12 @@ class Report:
         else:
             L += [f"Run: {meta.get('run_at')}", "",
                   "Each cited record was located again in the original file (by byte offset, worksheet row, JSON path, PDF page "
-                  "or HTML line) and compared with the text stored at ingest; the IP and timestamp stored for the record were "
-                  "also required to appear literally in that text.", "",
+                  "or HTML line) and compared with the text stored at ingest. The timestamp text, IP, account (when it was read "
+                  "from a column), other party, and for call records the cell, IMEI and IMSI stored for the record must also "
+                  "appear literally in that text.", "",
+                  "**What this does not check.** It does not re-decide the timezone or the day/month order, does not test the "
+                  "column mapping, does not check an account that was taken from the file's preamble or name, and does not "
+                  "check that a finding's conclusion follows from its records. Those are listed in REVIEW.md for you to confirm.", "",
                   md_table(["Result", "Count"], [["pass", meta.get("pass", 0)], ["fail", meta.get("fail", 0)],
                                                  ["could not check", meta.get("unverifiable", 0)], ["total", meta.get("total", 0)]]), ""]
             hashes = meta.get("hashes") or {}
@@ -640,7 +644,8 @@ class Report:
                 ["Records", f"{fmt_int(n_ev)} records, {fmt_int(n_id)} identifier occurrences"],
                 ["Time span (UTC)", f"{span[0]} to {span[1]}" if span and span[0] else "no timestamps"],
                 ["Findings", f"{len(self.findings)} ({len(p1)} priority 1) — [FINDINGS.md](FINDINGS.md)"],
-                ["Citation check", (f"{fmt_int(cc.get('pass', 0))} of {fmt_int(cc.get('total', 0))} cited records re-read from the original files "
+                ["Source text re-read", (f"{fmt_int(cc.get('pass', 0))} of {fmt_int(cc.get('total', 0))} cited records found again in the original files with their stored values "
+                                    f"(not a check of timezone, day/month order, column mapping or conclusions) "
                                     f"and matched — [CITATION_CHECK.md](CITATION_CHECK.md)") if cc else "not run yet"],
                 ["AI-drafted summary", (f"{nar_meta.get('accepted', 0)} sentences kept, {nar_meta.get('rejected', 0)} removed by verification "
                                         f"(model {nar_meta.get('model')})") if nar_meta else "not generated"],

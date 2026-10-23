@@ -21,10 +21,17 @@ def null_results(case, con, p: dict) -> list[dict]:
     have = _kinds(con)
     out: list[dict] = []
 
-    def add(area, title, statement, sql, kinds=()):
+    def add(area, title, statement, sql, kinds=(), state="none observed"):
         if kinds and any(k in have for k in kinds):
             return
-        out.append({"area": area, "title": title, "statement": statement, "sql": sql})
+        out.append({"area": area, "title": title, "statement": statement, "sql": sql, "state": state})
+
+    def cannot(area, title, why, sql):
+        """A check whose preconditions are not met: say it could not be tested, never 'nothing found'."""
+        out.append({"area": area, "title": title, "statement": why, "sql": sql, "state": "not testable"})
+
+    EXACT = ("ts_epoch IS NOT NULL AND (ts_flag IS NULL OR (ts_flag NOT LIKE '%date_only%' AND ts_flag NOT LIKE '%implausible_year%' "
+             "AND ts_flag NOT LIKE '%date_order_assumed%'))")
 
     ev = _n(con, "SELECT COUNT(*) FROM events")
     if not ev:
@@ -34,6 +41,7 @@ def null_results(case, con, p: dict) -> list[dict]:
 
     # ---- logins and account security
     fails = _n(con, "SELECT COUNT(*) FROM events WHERE category='login_failed'")
+    fails_timed = _n(con, f"SELECT COUNT(*) FROM events WHERE category='login_failed' AND {EXACT}")
     logins = _n(con, "SELECT COUNT(*) FROM events WHERE category IN ('login','login_failed','logout')")
     changes = _n(con, "SELECT COUNT(*) FROM events WHERE category='account_change'")
     if not logins:
@@ -43,6 +51,10 @@ def null_results(case, con, p: dict) -> list[dict]:
         if not fails:
             add(LA, "Failed logins", "No failed-login record is present in the returns.",
                 "SELECT COUNT(*) FROM ev WHERE category='login_failed'", ("failed_burst",))
+        elif not fails_timed:
+            cannot(LA, "Failed-login bursts", f"{fails:,} failed logins are present but none has a usable time of day (date only, or a day/month "
+                   "order the file never proves), so bursts within minutes cannot be measured.",
+                   "SELECT cite, ts_raw, ts_flag FROM ev WHERE category='login_failed'")
         else:
             add(LA, "Failed-login bursts",
                 f"{fails:,} failed logins are present but no account had {int(p.get('burst_failures', 5))} or more within "
@@ -52,7 +64,12 @@ def null_results(case, con, p: dict) -> list[dict]:
                 "No IP address was the source of failed logins against three or more different accounts.",
                 "SELECT ip, COUNT(DISTINCT account) AS accounts FROM ev WHERE category='login_failed' AND ip IS NOT NULL GROUP BY ip ORDER BY accounts DESC",
                 ("multi_account_failures",))
-    if changes:
+    changes_ip = _n(con, f"SELECT COUNT(*) FROM events WHERE category='account_change' AND ip IS NOT NULL AND {EXACT}")
+    if changes and not changes_ip:
+        cannot(LA, "Account changes from a newly seen IP", f"The {changes:,} account-change records carry no IP address (or no usable time), "
+               "so whether a change came from a newly seen IP cannot be tested.",
+               "SELECT cite, ts_utc, action, ip FROM ev WHERE category='account_change'")
+    elif changes:
         add(LA, "Account changes from a newly seen IP",
             f"None of the {changes:,} account-change records came from an IP address first seen for that account within "
             f"{int(p.get('change_new_ip_hours', 24))} hours before the change.",
@@ -69,7 +86,16 @@ def null_results(case, con, p: dict) -> list[dict]:
     if not ips:
         add(IP, "IP addresses", "No record carries an IP address.", "SELECT COUNT(*) FROM ev WHERE ip IS NOT NULL", ("ip_inventory", "no_ips"))
     else:
-        if attr:
+        fams = {r[0]: r[1] for r in con.execute("SELECT source_id, GROUP_CONCAT(DISTINCT ip_ver) FROM events WHERE ip IS NOT NULL GROUP BY source_id")}
+        only4 = [k for k, v in fams.items() if str(v) == "4"]
+        only6 = [k for k, v in fams.items() if str(v) == "6"]
+        if attr and only4 and only6:
+            add(IP, "IPs shared by accounts or files",
+                "No public (or documentation-range) IP address appears in more than one account or file. Note: some files hold only IPv4 "
+                "and others only IPv6 addresses, which can never be equal even when they come from the same connection.",
+                "SELECT source, ip_ver, COUNT(*) FROM ev WHERE ip IS NOT NULL GROUP BY 1, 2", ("notable_ip", "shared_infrastructure"),
+                state="partly testable")
+        elif attr:
             add(IP, "IPs shared by accounts or files",
                 "No public (or documentation-range) IP address appears in more than one account or more than one file.",
                 "SELECT ip, accounts, sources FROM ip_summary WHERE ip_class IN ('public','documentation') ORDER BY accounts DESC, sources DESC",
@@ -97,7 +123,10 @@ def null_results(case, con, p: dict) -> list[dict]:
         add(TM, "Long gaps in activity",
             f"No account or file has a stretch without records of at least {p.get('gap_min_days', 7)} days that is also {p.get('gap_factor', 10)} times its usual gap.",
             "SELECT account, MIN(ts_utc), MAX(ts_utc), COUNT(*) FROM ev WHERE ts_utc IS NOT NULL GROUP BY account", ("gap",))
-        if logins:
+        if logins and not _n(con, f"SELECT COUNT(*) FROM events WHERE ip IS NOT NULL AND category IN ('login','login_failed') AND {EXACT}"):
+            cannot(TM, "Rapid network switches", "No login record has both an IP address and a usable time of day, so switches within minutes cannot be measured.",
+                   "SELECT cite, ts_raw, ts_flag, ip FROM ev WHERE category IN ('login','login_failed')")
+        elif logins:
             add(TM, "Rapid network switches",
                 f"No account used IPs from different networks within {int(p.get('concurrent_window_min', 10))} minutes of each other.",
                 "SELECT account, ts_utc, ip FROM ev WHERE category IN ('login','login_failed') AND ip IS NOT NULL ORDER BY account, ts_utc",
@@ -165,7 +194,13 @@ def null_results(case, con, p: dict) -> list[dict]:
                                              f"{vv.get('max_hops')} hops of calls or texts (short codes and numbers with more than {vv.get('hub_max')} contacts not used as links): "
                                              + ", ".join(f"{r[0]} and {r[1]}" for r in rows[:30]) + ".",
                                 "sql": "-- breadth-first search over the contact pairs in: SELECT target, other FROM calls WHERE COALESCE(dir,'') != 'fwd'; see METHODS.md, Contact chains"})
-            if _n(con, "SELECT COUNT(*) FROM tcore WHERE lat IS NOT NULL"):
+            spans = con.execute("SELECT target, MIN(ts_epoch), MAX(ts_epoch) FROM tcore WHERE lat IS NOT NULL AND length(ts_utc) > 10 "
+                                "GROUP BY target").fetchall()
+            overlap = any(a[1] <= b[2] and b[1] <= a[2] for i, a in enumerate(spans) for b in spans[i + 1:])
+            if len(spans) >= 2 and not overlap:
+                cannot(TL, "Co-location", "The targets' located records cover periods that do not overlap, so co-location cannot be tested.",
+                       "SELECT target, MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE lat IS NOT NULL GROUP BY target")
+            elif _n(con, "SELECT COUNT(*) FROM tcore WHERE lat IS NOT NULL"):
                 add(TL, "Co-location", f"No two targets used the same or neighbouring cell sites within {int(p.get('tel_coloc_window_min', 15))} minutes of each other.",
                     "SELECT cite, ts_utc, target, cell, lat, lon FROM ccore WHERE lat IS NOT NULL ORDER BY ts_utc", ("telecom_colocation",))
         elif targets == 1:

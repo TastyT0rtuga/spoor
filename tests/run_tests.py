@@ -774,6 +774,17 @@ def review_regressions():
     ok(not bad, f"ECI spellings: decimal unless hex is known, eNodeB-cell when the cell is under 256 ({bad or 'all right'})")
     ok(norm_imei("000000000000000")[0] is None and norm_imei("111111111111111")[0] is None, "placeholder IMEIs are not handsets")
     # --- co-location by label only (review #1 F-06, #2 G-F10, #3 SR-06)
+    # --- cross-return identity (review #1 F-09, #2 G-F9, #3 SR-10)
+    _c, con = case("g09")
+    xs = [_json.loads(r[0]) for r in con.execute("SELECT facts FROM findings WHERE kind='crossref_item'")]
+    ok(not any(str(x["values"]["value"]).lower() in ("unknown", "n/a") for x in xs), "placeholder accounts (unknown, N/A) are never matched across returns")
+    summ = con.execute("SELECT statement FROM findings WHERE kind IN ('crossref_summary','crossref_none')").fetchone()
+    ok(summ is not None, "cross-return summary present for the placeholder case")
+    _c, con = case("f09")
+    xs = [(_json.loads(r[0]), r[1], r[2]) for r in con.execute("SELECT facts, statement, priority FROM findings WHERE kind='crossref_item'")]
+    u = [x for x in xs if x[0]["values"]["kind"] == "username"]
+    ok(len(u) == 1 and "same name string only" in u[0][1] and "letter case differs" in u[0][1] and u[0][2] == 2,
+       "a bare username across providers is labelled 'same name string; verify', case difference noted, priority 2")
     _c, con = case("samecell")
     ok("telecom_colocation" not in kinds(con) and "telecom_same_cell" in kinds(con) and "telecom_shared_imei" not in kinds(con),
        "same cell label without coordinates: a 'same cell label' note, not co-location; all-zero IMEI links nobody")
