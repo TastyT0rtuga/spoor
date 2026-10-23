@@ -823,6 +823,8 @@ def review_regressions():
     u = [x for x in xs if x[0]["values"]["kind"] == "username"]
     ok(len(u) == 1 and "same name string only" in u[0][1] and "letter case differs" in u[0][1] and u[0][2] == 2,
        "a bare username across providers is labelled 'same name string; verify', case difference noted, priority 2")
+    gl = grammar_lint(_c.report_dir)
+    ok(not gl, f"cross-return reports: number agreement ({gl[:5]})")
     # --- BLUF selection (review #2 G-Q5, #3 SR-12): watchlist/telecom first, at most 2 per theme, omitted ones counted
     from spoor.analysis import pick_round_robin, BLUF_ORDER
     pools = {k: [] for k in BLUF_ORDER}

@@ -413,7 +413,7 @@ class Report:
         tzname = self.case.display_tz if self.tz else ""
         L = [f"# Timeline — {self.case.name}", "",
              f"Activity records (logins, failures, logouts, account changes, registrations, transactions, messages) in time order. "
-             f"{fmt_int(n)} records" + (f"; the first {fmt_int(mx)} are listed here and all are in exports/timeline.csv" if n > mx else "") + ".", ""]
+             f"{fmt_int(n)} record{'s' if n != 1 else ''}" + (f"; the first {fmt_int(mx)} are listed here and all are in exports/timeline.csv" if n > mx else "") + ".", ""]
         rows = []
         for e in dbm.rows(self.con, "SELECT e.*, s.label, x.as_org, x.country FROM events e JOIN sources s ON s.id=e.source_id "
                                     "LEFT JOIN ip_enrich x ON x.ip=e.ip WHERE e.ts_epoch IS NOT NULL AND e.category != 'other' "

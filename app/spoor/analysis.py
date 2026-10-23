@@ -112,7 +112,7 @@ def scope_line(rp, multi: bool) -> str:
     span = con.execute("SELECT MIN(ts_utc), MAX(ts_utc) FROM events WHERE ts_epoch IS NOT NULL AND "
                        "(ts_flag IS NULL OR ts_flag NOT LIKE '%implausible_year%')").fetchone()
     s = f"{len(act)} return{'s' if len(act) != 1 else ''}" + (f" ({', '.join(r['label'] + ' ' + r['name'] for r in act[:8])}{' ...' if len(act) > 8 else ''})" if act else "")
-    s += f", {fmt_int(n_ev)} records"
+    s += f", {fmt_int(n_ev)} record{'s' if n_ev != 1 else ''}"
     if span and span[0]:
         s += f", {span[0][:10]} to {span[1][:10]} (UTC)"
     out = [r for r in rows if r["state"] == "excluded"]
@@ -461,7 +461,7 @@ def write_crossref(rp) -> Path | None:
          f"Prepared {utc_now_str()} by Spoor {__version__}. Back to the [analysis](REPORT.md). Only overlaps are on this page; "
          "checks that found nothing are in Appendix A of the analysis.", "",
          "## Returns compared", ""]
-    L += [f"- **{r['label']}** {md_escape(r['name'])} - {', '.join(r['labels'][:6])}{' ...' if len(r['labels']) > 6 else ''}; {fmt_int(r['records'])} records"
+    L += [f"- **{r['label']}** {md_escape(r['name'])} - {', '.join(r['labels'][:6])}{' ...' if len(r['labels']) > 6 else ''}; {B._pl(r['records'], 'record')}"
           for r in act]
     out = [r for r in rows if r["state"] == "excluded"]
     if out:

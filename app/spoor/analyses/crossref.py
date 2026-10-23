@@ -11,7 +11,7 @@ import csv
 import re
 import itertools
 
-from ..findings import plural
+from ..findings import agree, plural
 from ..identifiers import KIND_LABELS
 from .base import ATTR_SQL, T, Analysis, sq
 
@@ -162,9 +162,10 @@ class CrossRef(Analysis):
         ph = sorted(self.placeholders)
         vals["placeholders_not_matched"] = ph
         kinds_txt = ", ".join(self.n_kind(n, k) for k, n in sorted(by_kind.items(), key=lambda kv: (KIND_ORDER.get(kv[0], 8), kv[0])))
-        stmt = (f"{plural(len(self.rows), 'item')} appear in the records of two or more of the {len(labels)} returns: {kinds_txt}. "
-                f"{len(pairs)} of {n_pairs} {'pair' if n_pairs == 1 else 'pairs'} of returns share at least one item"
-                + (f"; the strongest pair is {mrows[0][0]} and {mrows[0][2]} with {mrows[0][8]} shared items" if mrows else "") + ".")
+        stmt = (f"{plural(len(self.rows), 'item')} {agree(len(self.rows), 'appear')} in the records of two or more of the {len(labels)} returns: {kinds_txt}. "
+                + (f"The two returns share {plural(mrows[0][8], 'item')}" if n_pairs == 1 else
+                   f"{len(pairs)} of {n_pairs} pairs of returns share at least one item"
+                   + (f"; the strongest pair is {mrows[0][0]} and {mrows[0][2]} with {plural(mrows[0][8], 'shared item')}" if mrows else "")) + ".")
         if self.nonattr:
             stmt += (f" {plural(self.nonattr, 'private, shared or reserved IP address', 'private, shared or reserved IP addresses')} "
                      f"{'appears' if self.nonattr == 1 else 'appear'} in several returns; such addresses say nothing about a common user and were not counted.")
