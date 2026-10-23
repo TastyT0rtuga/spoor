@@ -274,6 +274,7 @@ async function viewReturns(v) {
         ${x.state !== "removed" ? `<button class="btn small" data-ract="remove" data-ref="${esc(x.label)}" ${r.running ? "disabled" : ""} title="Hide this return. The files are never touched; Restore brings it back.">Remove</button>` : ""}
       </div>
       <div class="small muted" style="margin:4px 0 6px">${x.state === "excluded" ? `<b style="color:var(--flag)">Left out of the next analysis</b> (${esc(x.state_at || "")}${x.note ? ": " + esc(x.note) : ""}). ` : ""}${x.state === "removed" ? `<b>Removed</b> ${esc(x.state_at || "")}. ` : ""}${x.files.length} file(s)${x.state === "active" ? `, ${fmt(x.records)} records` : ""}${x.first_utc ? `, ${esc(x.first_utc.slice(0, 10))} to ${esc(x.last_utc.slice(0, 10))}` : ""} · <span class="mono">${esc(x.root || "")}</span></div>
+      ${x.state === "active" && x.note && /^(Kept as ONE return|File names in this folder name)/.test(x.note) ? `<div class="flagbox small">${esc(x.note)} Use “move to… a new return” on the files below to split it.</div>` : ""}
       <details><summary class="small">Files in this return</summary><div class="tblwrap" style="margin-top:6px"><table class="t"><tbody>${files}</tbody></table></div></details>
     </div>`;
   };

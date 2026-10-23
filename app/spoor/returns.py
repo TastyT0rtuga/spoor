@@ -58,13 +58,61 @@ def backfill(con) -> None:
 
 # ---------------------------------------------------------------- grouping files into returns when they are added
 
-def plan_groups(root: Path, files: list[Path]) -> list[tuple[str, str, list[Path]]]:
-    """[(name, root path, files)]. A file or a ZIP is one return. A folder that holds sub-folders or ZIPs is read as
+# words that name a CATEGORY of records inside one production (Google "Subscriber_Information", "IP_Login_History", ...)
+CATEGORY_WORDS = {"subscriber", "subscribers", "subscription", "basic", "info", "information", "account", "accounts", "profile", "ip",
+                  "ips", "login", "logins", "logon", "access", "activity", "activities", "history", "log", "logs", "location", "locations",
+                  "messages", "message", "chat", "chats", "conversations", "content", "contacts", "contact", "photos", "media", "videos",
+                  "files", "payments", "payment", "billing", "transactions", "transaction", "orders", "devices", "device", "connections",
+                  "connection", "sessions", "session", "security", "changes", "records", "data", "call", "calls", "sms", "mms", "cdr",
+                  "cdrs", "text", "texts", "email", "emails", "mail", "registration", "registrations", "address", "book", "search",
+                  "searches", "posts", "friends", "followers", "groups", "events", "and", "of", "the", "user", "usage", "details",
+                  "detail", "cell", "site", "sites", "tower", "timeline", "storage", "drive", "backup", "backups", "linked", "metadata",
+                  "headers", "header", "wallet", "wallets", "deposits", "withdrawals", "trades", "kyc", "audit", "export", "part"}
+# provider names that, found in FILE names of one flat folder, suggest it mixes productions
+PROVIDER_MARKERS = {"google": "Google", "gmail": "Google", "youtube": "Google", "apple": "Apple", "icloud": "Apple",
+                    "facebook": "Meta", "instagram": "Meta", "whatsapp": "Meta", "meta": "Meta", "snapchat": "Snap", "snap": "Snap",
+                    "microsoft": "Microsoft", "outlook": "Microsoft", "hotmail": "Microsoft", "skype": "Microsoft", "tiktok": "TikTok",
+                    "twitter": "X (Twitter)", "discord": "Discord", "telegram": "Telegram", "yahoo": "Yahoo", "coinbase": "Coinbase",
+                    "binance": "Binance", "kraken": "Kraken", "paypal": "PayPal", "venmo": "PayPal", "cashapp": "Block (Cash App)",
+                    "verizon": "Verizon", "vzw": "Verizon", "att": "AT&T", "tmobile": "T-Mobile", "sprint": "T-Mobile",
+                    "uscellular": "UScellular", "comcast": "Comcast", "charter": "Charter", "dropbox": "Dropbox", "reddit": "Reddit",
+                    "uber": "Uber", "amazon": "Amazon", "kik": "Kik", "signal": "Signal", "roblox": "Roblox", "steam": "Valve"}
+
+
+def _words(name: str) -> list[str]:
+    import re
+    return [w for w in re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1 \2", name).lower()) if w]
+
+
+def _category_like(name: str) -> bool:
+    ws = [w for w in _words(name) if not w.isdigit()]
+    return bool(ws) and all(w in CATEGORY_WORDS for w in ws)
+
+
+def _providers(files: list[Path]) -> dict:
+    """provider -> files whose NAME carries that provider's marker (only one marker per file counts)."""
+    out: dict = {}
+    for f in files:
+        hits = {PROVIDER_MARKERS[w] for w in _words(f.stem) if w in PROVIDER_MARKERS}
+        if len(hits) == 1:
+            out.setdefault(hits.pop(), []).append(f)
+    return out
+
+
+def plan_groups(root: Path, files: list[Path]) -> list[tuple[str, str, list[Path], str]]:
+    """[(name, root path, files, note)]. A file or a ZIP is one return. A folder that holds sub-folders or ZIPs is read as
     a folder of returns: each sub-folder (and each ZIP) is one return, and loose files at its top level together
-    form one return named after the folder. A folder with only files is one return."""
+    form one return named after the folder. A folder with only files is one return.
+
+    Two exceptions, so that one production is never counted as several (a false cross-return match) and the analyst
+    hears about a folder that seems to mix productions:
+    - when EVERY sub-folder's name is a category of records ("Subscriber_Information", "IP_Login_History", "Messages")
+      and there are no ZIPs, the folder is ONE return; the note says why (split it on the Returns screen if wrong);
+    - a flat folder whose file names name two or more providers stays one return (merging never invents a match) and
+      the note says to split it if they are separate productions."""
     root = Path(root)
     if root.is_file():
-        return [(nice_name(root), str(root), [root])]
+        return [(nice_name(root), str(root), [root], "")]
     kids: dict[str, list[Path]] = {}
     loose: list[Path] = []
     for f in files:
@@ -79,22 +127,42 @@ def plan_groups(root: Path, files: list[Path]) -> list[tuple[str, str, list[Path
             loose.append(f)
     zips = [f for f in loose if f.suffix.lower() == ".zip"]
     if not kids and not zips:
-        return [(nice_name(root), str(root), files)] if files else []
+        if not files:
+            return []
+        prov = _providers(files)
+        note = ""
+        if len(prov) >= 2:
+            note = (f"File names in this folder name {len(prov)} providers ({', '.join(sorted(prov))}). It was kept as ONE return; "
+                    f"if these are separate productions, split them on the Returns screen so they are compared with each other.")
+        return [(nice_name(root), str(root), files, note)]
+    if len(kids) >= 2 and not zips and all(_category_like(k) for k in kids):
+        note = (f"Kept as ONE return: its sub-folders ({', '.join(sorted(kids)[:6])}{' ...' if len(kids) > 6 else ''}) look like "
+                f"categories of records in one production. If they are separate productions, split them on the Returns screen.")
+        return [(nice_name(root), str(root), files, note)]
     out = []
     for name in sorted(kids):
-        out.append((name, str(root / name), kids[name]))
+        out.append((name, str(root / name), kids[name], ""))
     for z in zips:
-        out.append((nice_name(z), str(z), [z]))
+        out.append((nice_name(z), str(z), [z], ""))
     rest = [f for f in loose if f not in zips]
     if rest:
-        out.append((nice_name(root), str(root), rest))
+        out.append((nice_name(root), str(root), rest, ""))
     return out
 
 
-def return_for_root(con, name: str, root: str) -> int:
+def return_for_root(con, name: str, root: str, note: str = "") -> int:
     """Reuse the return created earlier for the same folder or file (files added to it later join it)."""
     rid = dbm.one(con, "SELECT id FROM returns WHERE root=? AND state != 'removed' ORDER BY id LIMIT 1", (root,))
-    return rid or new_return(con, name, root)
+    return rid or new_return(con, name, root, note)
+
+
+GROUPING_NOTE = ("Kept as ONE return", "File names in this folder name")
+
+
+def grouping_notes(con) -> list[tuple[str, str, str]]:
+    """[(label, name, note)] for active returns whose grouping the analyst should confirm."""
+    return [(r["label"], r["name"], r["note"]) for r in dbm.rows(con, "SELECT label, name, note FROM returns WHERE state='active' ORDER BY id")
+            if (r["note"] or "").startswith(GROUPING_NOTE)]
 
 
 # ---------------------------------------------------------------- listing

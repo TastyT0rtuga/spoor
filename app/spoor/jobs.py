@@ -514,6 +514,9 @@ def status_text(case, con, markdown: bool = True) -> str:
     if errs:
         lines.append(("**" if markdown else "") + f"WARNING: {len(errs)} analysis module{'s' if len(errs) > 1 else ''} FAILED - their findings are missing from the report: "
                      + "; ".join(f"{m} ({e[:120]})" for m, e in errs) + ("**" if markdown else ""))
+    from . import returns as _rets
+    for lab, nm, note in _rets.grouping_notes(con):
+        lines.append(f"Check return {lab} ({nm}): {note}")
     if j.get("started_at"):
         lines.append(f"Started {j['started_at']}" + (f", running for {fmt_duration(elapsed)}" if elapsed and j["status"] == "running" else
                                                       (f", took {fmt_duration(elapsed)}" if elapsed else "")))

@@ -147,8 +147,9 @@ def register_path(case: Case, con, path: str, recursive: bool = True, zip_passwo
     from . import returns as rets
     files = walk_files(p, recursive)
     group_of: dict = {}
-    for name, root, fs in rets.plan_groups(p, files):
-        rid = None
+    notes: dict = {}
+    for name, root, fs, note in rets.plan_groups(p, files):
+        notes[root] = note
         for f in fs:
             group_of[str(f.resolve())] = (name, root)
     return_ids: dict = {}
@@ -159,7 +160,7 @@ def register_path(case: Case, con, path: str, recursive: bool = True, zip_passwo
             continue
         name, root = group_of.get(rp, (rets.nice_name(f), rp))
         if root not in return_ids:
-            return_ids[root] = rets.return_for_root(con, name, root)
+            return_ids[root] = rets.return_for_root(con, name, root, notes.get(root, ""))
         kind = detect_kind(f)
         st = f.stat()
         label = next_label(con)

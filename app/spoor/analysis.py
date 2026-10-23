@@ -260,7 +260,8 @@ def returns_table(rp) -> list[str]:
     L = ["| Return | Name | Files | Records | Time span (UTC) | Status |", "| --- | --- | --- | --- | --- | --- |"]
     for r in rows:
         span = f"{r['first_utc'][:10]} to {r['last_utc'][:10]}" if r["first_utc"] else ""
-        st = {"active": "analysed" if r["records"] else "no records", "excluded": "**left out** by the analyst" + (f" ({r['note']})" if r["note"] else "")}.get(r["state"], r["state"])
+        grp = " - grouping to confirm (see REVIEW.md)" if (r["note"] or "").startswith(rets.GROUPING_NOTE) and r["state"] == "active" else ""
+        st = {"active": ("analysed" if r["records"] else "no records") + grp, "excluded": "**left out** by the analyst" + (f" ({r['note']})" if r["note"] else "")}.get(r["state"], r["state"])
         L.append(f"| {r['label']} | {md_escape(r['name'])} | {', '.join(r['labels'][:6])}{' ...' if len(r['labels']) > 6 else ''} | "
                  f"{fmt_int(r['records']) if r['state'] == 'active' else ''} | {span} | {st} |")
     return L + [""]

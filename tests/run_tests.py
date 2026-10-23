@@ -785,6 +785,18 @@ def review_regressions():
     u = [x for x in xs if x[0]["values"]["kind"] == "username"]
     ok(len(u) == 1 and "same name string only" in u[0][1] and "letter case differs" in u[0][1] and u[0][2] == 2,
        "a bare username across providers is labelled 'same name string; verify', case difference noted, priority 2")
+    # --- return grouping (review #2 G-F9, #3 SR-10)
+    _c, con = case("grp_google")
+    rs = list(con.execute("SELECT label, note FROM returns"))
+    ok(len(rs) == 1 and rs[0][1].startswith("Kept as ONE return"), f"category sub-folders of one production stay one return ({rs})")
+    ok(not con.execute("SELECT 1 FROM findings WHERE kind='crossref_item'").fetchone(), "one production is not cross-matched with itself")
+    from spoor.jobs import status_text
+    ok("Check return R01" in status_text(_c, con), "the grouping decision is shown in spoor status")
+    rv = next(_c.dir.rglob("REVIEW.md"), None)
+    ok(rv is not None and "Return grouping, **R01**" in rv.read_text(), "the grouping decision is a REVIEW.md item")
+    _c, con = case("grp_flat")
+    rs = list(con.execute("SELECT label, note FROM returns"))
+    ok(len(rs) == 1 and "Meta" in rs[0][1] and "Snap" in rs[0][1], f"a flat folder naming two providers is flagged for splitting ({rs})")
     _c, con = case("samecell")
     ok("telecom_colocation" not in kinds(con) and "telecom_same_cell" in kinds(con) and "telecom_shared_imei" not in kinds(con),
        "same cell label without coordinates: a 'same cell label' note, not co-location; all-zero IMEI links nobody")

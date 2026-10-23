@@ -450,6 +450,9 @@ class Report:
                   "records are still there: verify them by hand.", ""]
             L += [f"- [ ] [{fid}](FINDINGS.md#{fid.lower()}): {md_escape(why)}" for fid, why, _q in sqlfail] + [""]
         L += ["## 1. Assumptions to confirm", ""]
+        from . import returns as _rets
+        for lab, nm, note in _rets.grouping_notes(self.con):
+            L.append(f"- [ ] Return grouping, **{lab}** ({md_escape(nm)}): {md_escape(note)}")
         assumptions = [f for f in self.findings if f["kind"] in ("tz_assumed", "tz_conflict", "date_order", "flag_ambiguous_dst",
                                                                     "flag_date_order_assumed", "flag_tz_conflict", "flag_ambiguous_tz_abbr",
                                                                     "flag_nonexistent_local_time", "flag_abbr_dst_mismatch",
