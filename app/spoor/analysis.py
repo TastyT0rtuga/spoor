@@ -164,12 +164,24 @@ def map_note(rp) -> str | None:
     return s
 
 
-def bluf_items(rp, multi: bool, refs: RefBook) -> list[str]:
+BLUF_MAX = 8
+BLUF_PER_THEME = 2
+# watchlist hits and telecom leads have a reserved first slot: a full page of account-access leads must not hide them
+BLUF_ORDER = ("watch", "telecom", "access", "linked", "returns", "ident")
+
+
+def bluf_items(rp, multi: bool, refs: RefBook) -> tuple[list[str], int]:
+    """(items, omitted). Leads are pooled by theme, then taken round-robin (watchlist and telecom first), at most
+    BLUF_PER_THEME per theme while other themes still have leads, BLUF_MAX in all; the rest are counted, not dropped
+    silently (reviews #2 G-Q5, #3 SR-12)."""
+    real = refs
+    refs = _DeferRefs()           # numbers are given only to the leads actually listed, in listed order
     leads = [f for f in rp.findings if B.role(f) == "lead"]
     by = {}
     for f in leads:
         by.setdefault(B.theme_of(f), []).append(f)
-    items: list[str] = []
+    pools: dict = {k: [] for k in BLUF_ORDER}
+    items = pools["access"]
     changes = B.group_changes(by.get("access", []))
     used_changes = set()
     for f in by.get("access", []):
@@ -193,9 +205,9 @@ def bluf_items(rp, multi: bool, refs: RefBook) -> list[str]:
     for f in by.get("access", []):
         if f["kind"] == "multi_account_failures":
             items.append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
-    for f in by.get("linked", [])[:3]:
+    for f in by.get("linked", []):
         if f["kind"] == "account_cluster":
-            items.append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
+            pools["linked"].append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
     cs = [f for f in by.get("returns", []) if f["kind"] == "crossref_summary"]
     if cs:
         top = [f for f in by["returns"] if f["kind"] == "crossref_item" and B._v(f).get("kind") != "username"][:4]
@@ -204,19 +216,56 @@ def bluf_items(rp, multi: bool, refs: RefBook) -> list[str]:
              f"{cv['pairs_with_overlap']} of {cv['pairs_compared']} pairs of returns share at least one.")
         if top:
             s += " Strongest: " + "; ".join(f"{B._v(t)['value']} ({B._v(t)['return_count']} returns)" for t in top) + "."
-        items.append(f"{s} {refs.cite([cs[0]['fid']] + [t['fid'] for t in top])} See [CROSSREF.md](CROSSREF.md).")
+        pools["returns"].append(f"{s} {refs.cite([cs[0]['fid']] + [t['fid'] for t in top])} See [CROSSREF.md](CROSSREF.md).")
     shown_vals = {B._v(f).get("value") for f in by.get("returns", []) if f["kind"] == "crossref_item"}
-    ids = [f for f in by.get("ident", []) if f["kind"] == "shared_identifier" and B._v(f).get("value") not in shown_vals][:2]
+    ids = [f for f in by.get("ident", []) if f["kind"] == "shared_identifier" and B._v(f).get("value") not in shown_vals]
     for f in ids:
-        items.append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
+        pools["ident"].append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
     tel = by.get("telecom", [])
-    for f in tel[:3]:
-        items.append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
+    for f in tel:
+        pools["telecom"].append(f"{B.brief(f, multi)} {refs.cite([f['fid']])}")
     wl = by.get("watch", [])
     if wl:
         vals = "; ".join(B._v(f)["value"] + (f" ('{B._v(f)['label']}')" if B._v(f).get("label") else "") for f in wl[:4])
-        items.append(f"{B._pl(len(wl), 'watchlist entry', 'watchlist entries')} matched records: {vals}{' ...' if len(wl) > 4 else ''}. {refs.cite([f['fid'] for f in wl[:6]])}")
-    return items[:8]
+        pools["watch"].append(f"{B._pl(len(wl), 'watchlist entry', 'watchlist entries')} matched records: {vals}{' ...' if len(wl) > 4 else ''}. {refs.cite([f['fid'] for f in wl[:6]])}")
+    out, omitted = pick_round_robin(pools)
+    return [refs.resolve(t, real) for t in out], omitted
+
+
+class _DeferRefs:
+    def __init__(self):
+        self.held: list = []
+
+    def cite(self, fids) -> str:
+        self.held.append(list(fids))
+        return f"\x00{len(self.held) - 1}\x00"
+
+    def resolve(self, text: str, real: "RefBook") -> str:
+        import re as _re
+        return _re.sub("\x00(\\d+)\x00", lambda m: real.cite(self.held[int(m.group(1))]), text)
+
+
+def pick_round_robin(pools: dict) -> tuple[list[str], int]:
+    out: list[str] = []
+    taken = {k: 0 for k in pools}
+    while len(out) < BLUF_MAX:
+        moved = False
+        for k in BLUF_ORDER:
+            if len(out) >= BLUF_MAX:
+                break
+            if taken[k] < len(pools[k]) and taken[k] < BLUF_PER_THEME:
+                out.append(pools[k][taken[k]])
+                taken[k] += 1
+                moved = True
+        if not moved:
+            break
+    # slots left over (few themes): fill from the themes that still have leads, in the same order
+    for k in BLUF_ORDER:
+        while len(out) < BLUF_MAX and taken[k] < len(pools[k]):
+            out.append(pools[k][taken[k]])
+            taken[k] += 1
+    total = sum(len(v) for v in pools.values())
+    return out, total - len(out)
 
 
 def narrative(rp, multi: bool, refs: RefBook) -> list[str]:
@@ -320,9 +369,12 @@ def write_analysis(rp) -> Path:
          f"[Full detail](REPORT-FULL.md) · [Findings](FINDINGS.md) · [Cross-return](CROSSREF.md) · [Review checklist](REVIEW.md)", ""]
     # ---- BLUF
     L += ["## BLUF", "", f"**Scope:** {scope_line(rp, multi)}", ""]
-    items = bluf_items(rp, multi, refs)
+    items, omitted = bluf_items(rp, multi, refs)
     if items:
         L += [f"- {t}" for t in items] + [""]
+        if omitted:
+            L += [f"{omitted} more lead{'s are' if omitted != 1 else ' is'} not listed here; all are in [What the records show](#what-the-records-show) "
+                  "and [FINDINGS.md](FINDINGS.md).", ""]
     else:
         L += ["- Nothing in the records met the tests for a lead (see Appendix A for what was checked).", ""]
     mn = map_note(rp)

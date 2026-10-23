@@ -39,6 +39,18 @@ def plural(n: int, word: str, plural_word: Optional[str] = None) -> str:
     return f"{fmt_int(n)} {word if n == 1 else (plural_word or word + 's')}"
 
 
+_SING = {"have": "has", "are": "is", "were": "was", "do": "does", "fall": "falls", "carry": "carries", "come": "comes",
+         "use": "uses", "appear": "appears", "need": "needs", "match": "matches", "share": "shares"}
+
+
+def agree(n: int, phrase: str) -> str:
+    """Make a verb phrase written for the plural agree with n: agree(1, 'have no offset') -> 'has no offset'."""
+    if n != 1:
+        return phrase
+    head, sep, rest = phrase.partition(" ")
+    return _SING.get(head, head) + sep + rest
+
+
 class FindingWriter:
     def __init__(self, con, module: str):
         self.con = con

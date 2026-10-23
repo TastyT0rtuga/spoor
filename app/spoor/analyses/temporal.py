@@ -122,7 +122,7 @@ class Temporal(Analysis):
         first, last = rows[0]["day"], rows[-1]["day"]
         span = (dt.date.fromisoformat(last) - dt.date.fromisoformat(first)).days + 1
         stmt = (f"Events fall on {plural(len(rows), 'distinct UTC day')} between {first} and {last} ({plural(span, 'calendar day')}); "
-                f"median {fmt_int(med)} events per active day.")
+                f"median {fmt_int(med)} {'event' if med == 1 else 'events'} per active day.")
         if spikes:
             stmt += (f" {plural(len(spikes), 'day')} {'has' if len(spikes) == 1 else 'have'} at least {fmt_int(thr)} events (5 times the median, minimum 10): "
                      + "; ".join(f"{r['day']} ({plural(r['n'], 'event')})" for r in spikes[:8]) + (" ..." if len(spikes) > 8 else "") + ".")

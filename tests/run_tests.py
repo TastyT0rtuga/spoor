@@ -150,6 +150,8 @@ def figures_tests():
             return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((c.report_dir / "figures").glob("*.svg"))}
 
         a, con = _figure_case(tmp / "a", "Figure test", demo_returns_dir())
+        gl = grammar_lint(a.report_dir)
+        ok(not gl, f"demo case reports: number agreement ({gl[:5]})")
         figs = figure_rows(con)
         ha = hashes(a)
         ok([f["status"] for f in figs] == ["ok", "ok"] and len(ha) == 2, f"demo: both figures drawn ({sorted(ha)})")
@@ -697,6 +699,8 @@ def links_tests():
     ok(len(ls) == 1 and [p[2] for p in ls[0]["pairs"]] == [4, 3, 3] and not ls[0]["missing"], "saved link group reported with its chains")
     cc = dbm_meta(con, "citation_check")
     ok(cc.get("total", 0) > 0 and cc.get("fail", 1) == 0, "links case: every citation re-read and matched")
+    gl = grammar_lint(c.report_dir)
+    ok(not gl, f"links case reports: number agreement ({gl[:5]})")
     rep = (c.report_dir / "REPORT.md").read_text(encoding="utf-8")
     ok("linked in 4 hops" in rep[: rep.find("## References")], "the 4-hop chain is in the analysis text")
     from spoor.web import server as srv
@@ -707,6 +711,22 @@ def links_tests():
         ok(False, "Links API refuses a single number")
     except srv.ApiError:
         ok(True, "Links API refuses a single number")
+
+
+NOUNS_S = ("records|returns|accounts|files|findings|hops|chains|pairs|numbers|events|logins|logouts|contacts|items|days|hours|phones|"
+           "targets|timestamps|changes|addresses|IPs|failures|calls|texts|sources|sessions")
+
+
+def grammar_lint(report_dir) -> list:
+    """'1 records', '1 timestamp have', '2 record' style number-agreement slips in the generated reports."""
+    import re as _re
+    bad = _re.compile(r"(?<![\w.,:/+-])1 (?:\w+ )?(?:" + NOUNS_S + r")\b(?! of)|(?<![\w.,:/+-])1 \w+ (?:have|are|were)\b")
+    hits = []
+    for f in Path(report_dir).glob("*.md"):
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for m in bad.finditer(line):
+                hits.append(f"{f.name}:{i}: ...{line[max(0, m.start() - 30):m.end() + 15]}...")
+    return hits
 
 
 def dbm_meta(con, key):
@@ -803,6 +823,20 @@ def review_regressions():
     u = [x for x in xs if x[0]["values"]["kind"] == "username"]
     ok(len(u) == 1 and "same name string only" in u[0][1] and "letter case differs" in u[0][1] and u[0][2] == 2,
        "a bare username across providers is labelled 'same name string; verify', case difference noted, priority 2")
+    # --- BLUF selection (review #2 G-Q5, #3 SR-12): watchlist/telecom first, at most 2 per theme, omitted ones counted
+    from spoor.analysis import pick_round_robin, BLUF_ORDER
+    pools = {k: [] for k in BLUF_ORDER}
+    pools["access"] = [f"a{i}" for i in range(9)]
+    pools["watch"] = ["w0"]
+    pools["telecom"] = ["t0", "t1", "t2"]
+    pools["returns"] = ["r0"]
+    got, omitted = pick_round_robin(pools)
+    ok(got[:2] == ["w0", "t0"] and "t1" in got and "r0" in got and len(got) == 8 and omitted == 6,
+       f"BLUF: watchlist and telecom leads are never crowded out by account-access leads; the rest are counted ({got}, {omitted})")
+    pools = {k: [] for k in BLUF_ORDER}
+    pools["access"] = [f"a{i}" for i in range(5)]
+    got, omitted = pick_round_robin(pools)
+    ok(got == pools["access"] and omitted == 0, "BLUF: a single theme still fills the free slots")
     # --- return grouping (review #2 G-F9, #3 SR-10)
     _c, con = case("grp_google")
     rs = list(con.execute("SELECT label, note FROM returns"))

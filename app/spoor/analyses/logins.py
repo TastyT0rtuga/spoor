@@ -44,10 +44,10 @@ class Logins(Analysis):
                              f"GROUP BY e.ip ORDER BY n DESC, e.ip LIMIT ?", (acc, self.trows))
             uas = self.q(f"SELECT user_agent, COUNT(*) AS n, MIN(ts_utc) AS f, MAX(ts_utc) AS l FROM events WHERE account=? AND "
                          f"category IN {LOGIN_CATS} AND user_agent IS NOT NULL GROUP BY user_agent ORDER BY n DESC LIMIT 10", (acc,))
-            bits = [f"{fmt_int(a['li'])} successful logins", f"{fmt_int(a['lf'])} failed", f"{fmt_int(a['lo'])} logouts",
-                    f"{fmt_int(a['ch'])} account changes"]
+            bits = [plural(a['li'], 'successful login'), f"{fmt_int(a['lf'])} failed", plural(a['lo'], 'logout'),
+                    plural(a['ch'], 'account change')]
             if a["rg"]:
-                bits.append(f"{fmt_int(a['rg'])} registration events")
+                bits.append(plural(a['rg'], 'registration event'))
             stmt = (f"Account {acc}: " + ", ".join(bits) + f", from {plural(a['ips'], 'distinct IP')} ({fmt_int(a['pub'])} public"
                     + (f", {fmt_int(a['doc'])} in documentation ranges" if a["doc"] else "") + ")"
                     + (f" and {plural(a['uas'], 'user agent')}" if a["uas"] else "")

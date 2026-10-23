@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..findings import plural
+from ..findings import plural, agree
 from ..util import fmt_int
 from .base import T, Analysis
 
@@ -83,10 +83,10 @@ class Quality(Analysis):
             if tsn and not n_zone:
                 stmt += " Every parsed timestamp carries its own UTC offset or is an epoch value, so no timezone assumption applies."
             elif n_zone and cfg.get("tz_assumed"):
-                stmt += (f" {plural(n_zone, 'timestamp')} have no offset of their own and were treated as {tz_txt}: "
+                stmt += (f" {plural(n_zone, 'timestamp')} {agree(n_zone, 'have')} no offset of {'its' if n_zone == 1 else 'their'} own and were treated as {tz_txt}: "
                          "no timezone indicator was found (ASSUMPTION - verify with the provider).")
             elif n_zone:
-                stmt += f" {plural(n_zone, 'timestamp')} have no offset of their own and were read as {tz_txt} (basis: {cfg.get('tz_basis')})."
+                stmt += f" {plural(n_zone, 'timestamp')} {agree(n_zone, 'have')} no offset of {'its' if n_zone == 1 else 'their'} own and were read as {tz_txt} (basis: {cfg.get('tz_basis')})."
             if cfg.get("default_account"):
                 vals["default_account"] = cfg["default_account"]
                 vals["default_account_basis"] = cfg.get("default_account_basis")
@@ -146,7 +146,7 @@ class Quality(Analysis):
                 if not n or fl not in FLAG_TEXT:
                     continue
                 self.add(f"flag_{fl}", f"{lab}: {plural(n, 'timestamp')} flagged {fl}",
-                         f"{lab} ({name}): {plural(n, 'record')} {FLAG_TEXT[fl]}.",
+                         f"{lab} ({name}): {plural(n, 'record')} {agree(n, FLAG_TEXT[fl])}.",
                          {"values": {"source": lab, "flag": fl, "count": n}},
                          sql=f"SELECT cite, ts_raw, ts_utc, ts_flag FROM ev WHERE source='{lab}' AND ts_flag LIKE '%{fl}%'",
                          evidence=self.sample("source_id=? AND ts_flag LIKE ?", (s["id"], f"%{fl}%"), 6),
