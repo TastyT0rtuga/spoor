@@ -231,12 +231,13 @@ async function viewOverview(v) {
   const k = c.counts;
   const cc = c.citation_check;
   const nar = c.narrative;
+  const failed = (c.analysis_errors || []).length ? `<div class="alertbox"><b>${c.analysis_errors.length} analysis module${c.analysis_errors.length > 1 ? "s" : ""} failed in the last run - the report is incomplete.</b> ${esc(c.analysis_errors.map((x) => x[0] + ": " + x[1]).join("; "))}. Run the analysis again; see REVIEW.md.</div>` : "";
   if (!k.sources) {
     v.innerHTML = `<div class="empty"><b>No returns added yet.</b><br>Go to <a href="#/c/${enc(S.slug)}/sources">Sources</a> and add the folder (or ZIP) that holds the subpoena returns. Spoor reads CSV, TSV, Excel, JSON, HTML, PDF, text and ZIP files.</div>`;
     return;
   }
   const keys = c.key_findings.map((f) => `<tr class="click" data-go="#/c/${enc(S.slug)}/findings/${f.fid}"><td class="mono nw">${f.fid}</td><td><b>${esc(f.title)}</b><div class="small">${esc(f.statement)}</div></td></tr>`).join("");
-  v.innerHTML = `
+  v.innerHTML = `${failed}
     <div class="stats">
       <div><b>${fmt(k.ingested)} / ${fmt(k.sources)}</b><span>files analysed</span></div>
       <div><b>${fmt(k.events)}</b><span>records</span></div>
@@ -514,7 +515,7 @@ async function showFinding(fid) {
     <p class="small muted">Click a citation to open that place in the original file.</p>
     ${tabs}
     ${f.export ? `<p><a href="/case/${enc(S.slug)}/file/${esc(f.export.replace(/^.*?exports/, "exports"))}">Download ${esc(f.export)}</a></p>` : ""}
-    ${f.sql ? `<h3>Reproduce</h3><pre class="sql">${esc(f.sql)}</pre><p class="small muted">Read-only SQL against case.db (any SQLite browser can run it).</p>` : ""}
+    ${f.sql ? `<h3>Reproduce</h3><pre class="sql">${esc(f.sql)}</pre><p class="small muted">Read-only SQL against case.db (any SQLite browser can run it).</p>` : (f.sql_failure ? `<div class="alertbox"><b>Reproduce query unavailable:</b> ${esc(f.sql_failure)}. Check this finding against its cited records by hand.</div>` : "")}
   </div>`;
 }
 

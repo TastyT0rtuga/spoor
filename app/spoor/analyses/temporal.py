@@ -188,7 +188,8 @@ class Temporal(Analysis):
                      {"values": {"account": acc, "source": lab, "kind": kind, "gap_start_utc": a["ts_utc"],
                                  "gap_end_utc": b["ts_utc"], "gap": human_delta(d), "gap_days": round(d / 86400, 1),
                                  "median_interval": human_delta(med), "min_days": min_days, "factor": factor}},
-                     sql=(f"SELECT cite, ts_utc FROM ev WHERE source='{lab}'" + (f" AND account={sq(acc)}" if acc else "") +
+                     sql=(f"SELECT cite, ts_utc FROM ev WHERE source={sq(self.one('SELECT label FROM sources WHERE id=?', (sid,)))}"
+                          + (f" AND account={sq(acc)}" if acc else "") +
                           f" AND ts_utc BETWEEN '{a['ts_utc']}' AND '{b['ts_utc']}' ORDER BY ts_utc"),
                      evidence=[(a["id"], "last record before gap"), (b["id"], "first record after gap")],
                      priority=2, sort_key=f"5{10**12 - int(d):013d}")

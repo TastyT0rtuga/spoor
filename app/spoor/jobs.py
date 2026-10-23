@@ -361,6 +361,7 @@ def run_pipeline(case, con, prog: Progress, params: dict, log) -> dict:
     mark("index")
 
     prog.stage("analyze")
+    con.execute("DELETE FROM meta WHERE key LIKE 'analysis_error_%'")     # errors of an earlier run do not carry over
     prog.set_total(len(MODULES), "analyses")
     for i, M in enumerate(MODULES):
         prog.message(M.category if hasattr(M, "category") else M.__name__)
@@ -462,13 +463,27 @@ def draw_figures(case, con, prog=None, log=None) -> dict:
 
 
 def _validate_sql(con, log) -> None:
-    """Every finding's reproduce-SQL must run; a broken one is removed rather than shown."""
-    for r in dbm.rows(con, "SELECT id, fid, sql FROM findings WHERE sql IS NOT NULL"):
+    """Every finding's reproduce query must run, and a finding that rests on records must get at least one row back.
+    One that fails keeps its finding but loses the query, and the failure is recorded (REVIEW.md, FINDINGS.md, the
+    dashboard) - never only in the log."""
+    fails = []
+    for r in dbm.rows(con, "SELECT f.id, f.fid, f.kind, f.sql, (SELECT COUNT(*) FROM finding_evidence fe WHERE fe.finding_id = f.id) AS nev "
+                           "FROM findings f WHERE f.sql IS NOT NULL AND f.fid IS NOT NULL"):
+        q = r["sql"].strip().rstrip(";").strip()
+        why = None
         try:
-            con.execute(f"SELECT * FROM ({r['sql']}) LIMIT 1").fetchall()
+            rows = con.execute(f"SELECT * FROM (\n{q}\n) LIMIT 1").fetchall()
+            if r["nev"] and not rows:
+                why = "the query returns no rows although the finding cites records"
         except Exception as e:  # noqa: BLE001
-            log.warning("finding %s: reproduce SQL failed (%s); removed", r["fid"], e)
+            why = f"the query does not run ({e})"
+        if why:
+            log.warning("finding %s (%s): reproduce SQL %s; removed", r["fid"], r["kind"], why)
+            fails.append([r["fid"], why, q[:2000]])
             con.execute("UPDATE findings SET sql=NULL WHERE id=?", (r["id"],))
+        elif q != r["sql"]:
+            con.execute("UPDATE findings SET sql=? WHERE id=?", (q, r["id"]))
+    dbm.set_meta(con, "sql_failures", fails)
 
 
 # ---------------------------------------------------------------- PROGRESS.md / status
@@ -495,6 +510,10 @@ def status_text(case, con, markdown: bool = True) -> str:
         except ValueError:
             pass
     lines.append(f"Job #{j['id']} ({j['kind']}): **{j['status'].upper()}**" if markdown else f"Job #{j['id']} ({j['kind']}): {j['status'].upper()}")
+    errs = dbm.analysis_errors(con)
+    if errs:
+        lines.append(("**" if markdown else "") + f"WARNING: {len(errs)} analysis module{'s' if len(errs) > 1 else ''} FAILED - their findings are missing from the report: "
+                     + "; ".join(f"{m} ({e[:120]})" for m, e in errs) + ("**" if markdown else ""))
     if j.get("started_at"):
         lines.append(f"Started {j['started_at']}" + (f", running for {fmt_duration(elapsed)}" if elapsed and j["status"] == "running" else
                                                       (f", took {fmt_duration(elapsed)}" if elapsed else "")))

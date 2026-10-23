@@ -352,6 +352,7 @@ class Report:
 
     # ------------------------------------------------------------------ FINDINGS.md
     def findings_md(self) -> Path:
+        sqlfail = {x[0]: x[1] for x in (dbm.get_meta(self.con, "sql_failures") or [])}
         L = [f"# Findings — {self.case.name}", "", DRAFT, "", CITE_HELP, ""]
         cur = None
         for f in self.findings:
@@ -375,6 +376,8 @@ class Report:
                 L += [f"Full data: [{f['export']}]({f['export']})", ""]
             if f.get("sql"):
                 L += ["Reproduce (read-only SQL against `case.db`):", "", "```sql", f["sql"], "```", ""]
+            elif f["fid"] in sqlfail:
+                L += [f"**Reproduce query unavailable:** {md_escape(sqlfail[f['fid']])}. Check this finding against its cited records by hand (listed in REVIEW.md).", ""]
         p = self.out / "FINDINGS.md"
         p.write_text("\n".join(L) + "\n", encoding="utf-8")
         return p
@@ -434,8 +437,21 @@ class Report:
         L = [f"# Analyst review checklist — {self.case.name}", "",
              "Everything the tool assumed, could not read, or drafted with the language model and then rejected. "
              "Tick each item once checked against the original return.", ""]
+        errs = dbm.analysis_errors(self.con)
+        if errs:
+            L += ["## 0. Analyses that FAILED - the report is incomplete", "",
+                  "These modules stopped with an error, so none of their findings are in this report. Run the analysis again; "
+                  "if the error repeats, send the log (cases/<case>/logs) to whoever maintains Spoor.", ""]
+            L += [f"- [ ] **{m}**: `{e[:300]}`" for m, e in errs] + [""]
+        sqlfail = dbm.get_meta(self.con, "sql_failures") or []
+        if sqlfail:
+            L += ["## 0b. Findings without a working reproduce query", "",
+                  "The query that should reproduce these findings failed its check, so it was removed. The finding text and its cited "
+                  "records are still there: verify them by hand.", ""]
+            L += [f"- [ ] [{fid}](FINDINGS.md#{fid.lower()}): {md_escape(why)}" for fid, why, _q in sqlfail] + [""]
         L += ["## 1. Assumptions to confirm", ""]
         assumptions = [f for f in self.findings if f["kind"] in ("tz_assumed", "tz_conflict", "date_order", "flag_ambiguous_dst",
+                                                                    "flag_date_order_assumed", "flag_tz_conflict", "flag_ambiguous_tz_abbr",
                                                                     "flag_nonexistent_local_time", "flag_abbr_dst_mismatch",
                                                                     "flag_paired_by_proximity", "flag_two_digit_year")]
         for f in self.findings:

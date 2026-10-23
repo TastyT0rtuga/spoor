@@ -84,6 +84,11 @@ def _int(v) -> Optional[int]:
 ECI_MAX = (1 << 28) - 1      # an LTE ECI is 28 bits: 20-bit eNodeB + 8-bit cell
 
 
+# MCC-MNC codes of Verizon Wireless, whose tower lists write the ECI in hexadecimal (311480-0c82216)
+HEX_ECI_MCCMNC = {"310004", "310010", "310012", "310013", "310590", "310890", "310910", "311110", "311390"} | \
+    {f"3112{n:02d}" for n in range(70, 90)} | {f"31148{n}" for n in range(10)}
+
+
 def parse_eci(v) -> tuple[Optional[int], str]:
     """(ECI, form) from any of the spellings in the module docstring; (None, '') when not an LTE cell identity."""
     if v in (None, ""):
@@ -96,21 +101,30 @@ def parse_eci(v) -> tuple[Optional[int], str]:
     if re.fullmatch(r"\d+\.0+", s):
         s = s.split(".")[0]
     parts = [p for p in re.split(r"[-_ ]+", s) if p]
+    if len(parts) == 2 and re.fullmatch(r"\d{5,7}", parts[0]) and parts[1].isdigit() and int(parts[1]) < 256:
+        enb, cell = int(parts[0]), int(parts[1])
+        if enb <= 0xFFFFF:
+            return enb * 256 + cell, "eNodeB-cell"         # 48221-2, 0012345-1 (a cell number is under 256; an ECI is not)
+        return None, ""
     if len(parts) == 2 and re.fullmatch(r"\d{5,6}", parts[0]) and re.fullmatch(r"[0-9a-fA-F]{1,8}", parts[1]):
         x = parts[1]
-        if re.search(r"[a-fA-F]", x) or len(x) == 7:
-            return int(x, 16), "MCC-MNC + hex ECI"
-        return int(x), "MCC-MNC + ECI"
+        if re.search(r"[a-fA-F]", x):
+            n, form = int(x, 16), "MCC-MNC + hex ECI"
+        elif parts[0] in HEX_ECI_MCCMNC and len(x) == 7:
+            n, form = int(x, 16), "MCC-MNC + hex ECI (Verizon writes ECIs in hexadecimal)"
+        else:
+            n, form = int(x), "MCC-MNC + ECI" + (" (7 digits read as decimal - this carrier is not known to write hexadecimal)" if len(x) == 7 else "")
+        return (n, form) if 256 <= n <= ECI_MAX else (None, "")
     if len(parts) == 3 and re.fullmatch(r"\d{5,6}", parts[0]) and parts[1].isdigit() and parts[2].isdigit():
         enb, cell = int(parts[1]), int(parts[2])
-        if cell < 256:
+        if cell < 256 and enb <= 0xFFFFF:
             return enb * 256 + cell, "MCC-MNC-eNodeB-cell"
         return None, ""
-    if len(parts) == 2 and re.fullmatch(r"0\d{6}", parts[0]) and parts[1].isdigit() and int(parts[1]) < 256:
-        return int(parts[0]) * 256 + int(parts[1]), "eNodeB-cell"     # zero-padded 7-digit eNodeB (Sprint lists)
     if len(parts) == 1 and s.isdigit():
-        if len(s) == 15 and s[0] in "234567":
+        if len(s) == 15 and s[0] in "234567" and int(s[6:]) <= ECI_MAX:
             return int(s[6:]), "15-digit ECGI (MCC MNC ECI)"
+        if len(s) == 14 and s[0] in "234567" and not ("310" <= s[:3] <= "316") and int(s[5:]) <= ECI_MAX:
+            return int(s[5:]), "14-digit ECGI (MCC, 2-digit MNC, ECI)"
         n = int(s)
         if 256 <= n <= ECI_MAX:
             return n, "ECI"
@@ -216,6 +230,8 @@ def norm_imei(v) -> tuple[Optional[str], str]:
         s = s.split(".")[0]
     d = re.sub(r"\D", "", s)
     if 14 <= len(d) <= 16:
+        if len(set(d[:14])) == 1 or d[:8] == "00000000":
+            return None, "placeholder"         # 000000000000000, 111111111111111...: not a handset
         return d[:14], ""
     if re.fullmatch(r"[0-9A-Fa-f]{14}", s):
         return s.upper(), ""                 # MEID (hex)
@@ -457,6 +473,8 @@ def build(con, params: dict, prog=None, log=None) -> dict:
         if why == "sci":
             stats["imei_sci"] += 1
             notes.append("IMEI shown in scientific notation (damaged by a spreadsheet) - not used")
+        elif why == "placeholder":
+            notes.append("IMEI is a placeholder (all zeros or one repeated digit) - not used")
         imsi_raw = str(tel.get("imsi") or "")
         if re.search(r"\d[eE]\+\d", imsi_raw):
             imsi = None

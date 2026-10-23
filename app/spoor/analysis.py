@@ -124,6 +124,8 @@ def scope_line(rp, multi: bool) -> str:
 def caveats(rp) -> list[tuple[str, list[str]]]:
     """Short phrases about the data that change how far to rely on the results: [(text, [fids])]."""
     out = []
+    for m, e in dbm.analysis_errors(rp.con):
+        out.append((f"ANALYSIS FAILED: the {m} module stopped with an error ({e[:100]}), so its findings are missing from this report", []))
     tz = [f for f in rp.findings if f["kind"] == "tz_assumed"]
     if tz:
         out.append((f"times in {', '.join(B._v(f)['source'] for f in tz)} had no timezone and were read as UTC", [f["fid"] for f in tz]))

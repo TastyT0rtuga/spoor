@@ -202,8 +202,9 @@ class Telecom(Analysis):
                                   "columns": ["other", "records", "calls", "texts", "call_minutes", "outgoing", "incoming", "first_utc", "last_utc"],
                                   "rows": [[x["other"], x["n"], x["v"], x["s"], round((x["secs"] or 0) / 60, 1), x["o"], x["i"], x["f"], x["l"]]
                                            for x in top[: max(ntop, self.trows)]], "total_rows": agg["c"]}]},
-                     sql=f"SELECT other, COUNT(*) AS records, SUM(kind='voice') AS calls, SUM(kind IN ('sms','mms','rcs')) AS texts, "
-                         f"MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE target={sq(t)} AND other IS NOT NULL GROUP BY other ORDER BY records DESC",
+                     sql=(f"SELECT other, COUNT(*) AS records, SUM(kind='voice') AS calls, SUM(kind IN ('sms','mms','rcs')) AS texts, "
+                          f"MIN(ts_utc), MAX(ts_utc) FROM ccore WHERE target={sq(t)} AND other IS NOT NULL GROUP BY other ORDER BY records DESC"
+                          if top else f"SELECT cite, ts_utc, src_kind, kind, cell FROM ccore WHERE target={sq(t)} ORDER BY ts_utc"),
                      evidence=ev, priority=2, sort_key=f"5{10**9 - agg['n']:010d}{t}", export="exports/telecom_contacts.csv")
 
     # ------------------------------------------------------------ target <-> target
@@ -365,6 +366,7 @@ class Telecom(Analysis):
         # occasions are built as matches arrive (in time order), so two phones that are together for weeks
         # cost one entry per occasion, not one per pair of records
         episodes: dict = collections.defaultdict(list)
+        label_eps: dict = collections.defaultdict(list)   # same cell label, no coordinates: NOT co-location
         for r in rows:
             while recent and r["ts_epoch"] - recent[0]["ts_epoch"] > win:
                 recent.popleft()
@@ -383,7 +385,7 @@ class Telecom(Analysis):
                     continue
                 a, b = (q, rd) if q["target"] < rd["target"] else (rd, q)
                 m = (q["ts_epoch"], rd["ts_epoch"] - q["ts_epoch"], d, a, b)
-                eps = episodes[(a["target"], b["target"])]
+                eps = (episodes if d is not None else label_eps)[(a["target"], b["target"])]
                 if eps and m[0] - eps[-1]["end"] <= win:
                     e = eps[-1]
                     e["end"] = max(e["end"], m[0] + m[1])
@@ -397,8 +399,7 @@ class Telecom(Analysis):
         for ta, tb, eps in self.coloc[: self.max]:
             best = min(eps, key=lambda e: e["best"][1])["best"]
             _s, gap, d, a, b = best
-            dist = ("with no coordinates, same cell ID" if d is None else
-                    ("at the same coordinates" if round(d * 1000) == 0 else f"{int(round(d * 1000))} m apart"))
+            dist = "at the same coordinates" if round(d * 1000) == 0 else f"{int(round(d * 1000))} m apart"
             first, last = eps[0]["best"], eps[-1]["best"]
             t_first = min(first[3]["ts_utc"], first[4]["ts_utc"])
             t_last = min(last[3]["ts_utc"], last[4]["ts_utc"])
@@ -437,10 +438,29 @@ class Telecom(Analysis):
                      sql=(f"SELECT ea.cite AS cite_a, a.ts_utc AS ts_a, a.cell AS cell_a, eb.cite AS cite_b, b.ts_utc AS ts_b, b.cell AS cell_b "
                           f"FROM tcore a JOIN tcore b ON b.target={sq(tb)} AND b.ts_epoch BETWEEN a.ts_epoch - {int(win)} AND a.ts_epoch + {int(win)} "
                           f"AND ((a.lat IS NOT NULL AND b.lat IS NOT NULL AND ABS(a.lat - b.lat) <= {dmax / 111.0:.5f} "
-                          f"AND ABS(a.lon - b.lon) <= {dmax / (111.0 * math.cos(math.radians(min(abs(a['lat'] or 0), 80)))):.5f}) "
-                          f"OR (a.lat IS NULL AND b.lat IS NULL AND a.cell = b.cell)) JOIN ev ea ON ea.id = a.event_id "
+                          f"AND ABS(a.lon - b.lon) <= {dmax / (111.0 * math.cos(math.radians(min(abs(a['lat'] or 0), 80)))):.5f})) "
+                          f"JOIN ev ea ON ea.id = a.event_id "
                           f"JOIN ev eb ON eb.id = b.event_id WHERE a.target={sq(ta)} AND length(a.ts_utc) > 10 ORDER BY a.ts_epoch, b.ts_epoch"),
                      evidence=ev, priority=1, sort_key=f"0{999 - min(len(eps), 999):03d}{ta}{tb}", export="exports/colocation.csv")
+        # the same cell label without coordinates: reported apart, as a weaker note, never as co-location
+        for (ta, tb), eps in sorted(label_eps.items(), key=lambda kv: (-len(kv[1]), kv[0]))[: self.max]:
+            best = min(eps, key=lambda e: e["best"][1])["best"]
+            _s, gap, _d, a, b = best
+            cells = sorted({e["best"][3]["cell"] for e in eps})
+            t_first = min(eps[0]["best"][3]["ts_utc"], eps[0]["best"][4]["ts_utc"])
+            stmt = (f"Targets {ta} and {tb} both appear on cell label{'s' if len(cells) > 1 else ''} {', '.join(cells[:6])} within "
+                    f"{int(win // 60)} minutes of each other on {plural(len(eps), 'occasion')} (first {T(t_first)}; closest {human_delta(gap)} apart), "
+                    f"in records of the same carrier folder that carry no coordinates. A cell label alone does not say where the cell is - "
+                    f"carriers reuse labels across markets - so this is NOT co-location; add the carrier's tower list to place the cells.")
+            self.add("telecom_same_cell", f"Same cell label, no coordinates: {ta} and {tb}", stmt,
+                     {"values": {"target_a": ta, "target_b": tb, "occasions": len(eps), "cells": cells[:20], "window_min": int(win // 60),
+                                 "closest": human_delta(gap), "first_utc": t_first}},
+                     sql=(f"SELECT ea.cite AS cite_a, a.ts_utc AS ts_a, a.cell, eb.cite AS cite_b, b.ts_utc AS ts_b FROM tcore a JOIN tcore b "
+                          f"ON b.target={sq(tb)} AND b.cell = a.cell AND b.lat IS NULL AND b.ts_epoch BETWEEN a.ts_epoch - {int(win)} AND a.ts_epoch + {int(win)} "
+                          f"JOIN ev ea ON ea.id = a.event_id JOIN ev eb ON eb.id = b.event_id "
+                          f"WHERE a.target={sq(ta)} AND a.lat IS NULL AND length(a.ts_utc) > 10 ORDER BY a.ts_epoch"),
+                     evidence=[(a["event_id"], "same cell label"), (b["event_id"], "same cell label")], priority=2,
+                     sort_key=f"0z{ta}{tb}")
 
     # ------------------------------------------------------------ tower dumps
     def dumps(self):

@@ -297,6 +297,18 @@ def fts_available(con: sqlite3.Connection) -> bool:
         return False
 
 
+def analysis_errors(con) -> list[tuple[str, str]]:
+    """[(module, error)] for analysis modules that failed in the last run: their findings are MISSING."""
+    out = []
+    for k, v in con.execute("SELECT key, value FROM meta WHERE key LIKE 'analysis_error_%' ORDER BY key"):
+        try:
+            v = json.loads(v)
+        except Exception:  # noqa: BLE001
+            pass
+        out.append((k[len("analysis_error_"):], str(v)))
+    return out
+
+
 def get_meta(con, key, default=None):
     r = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     if not r:

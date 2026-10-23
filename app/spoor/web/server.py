@@ -171,6 +171,7 @@ def api_case(h, q, body, slug):
                 "key_findings": key, "jobs": jobs, "status_text": status_text(c, con, False),
                 "citation_check": dbm.get_meta(con, "citation_check"), "narrative": dbm.get_meta(con, "narrative"),
                 "returns_changed": dbm.get_meta(con, "returns_changed"),
+                "analysis_errors": dbm.analysis_errors(con),
                 "report_ready": (c.report_dir / "REPORT.md").exists(), "case_dir": str(c.dir), "report_dir": str(c.report_dir)}
     finally:
         con.close()
@@ -463,6 +464,7 @@ def api_finding(h, q, body, slug, fid):
         f["cites"] = dbm.rows(con, "SELECT cite, text FROM finding_cites WHERE finding_id=?", (f["id"],))
         f["checks"] = dbm.rows(con, "SELECT cite, status, detail FROM citation_checks WHERE event_id IN "
                                     "(SELECT event_id FROM finding_evidence WHERE finding_id=?)", (f["id"],))
+        f["sql_failure"] = next((x[1] for x in (dbm.get_meta(con, "sql_failures") or []) if x[0] == f["fid"]), None)
         return f
     finally:
         con.close()
