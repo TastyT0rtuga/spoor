@@ -283,6 +283,8 @@ class TsParser:
                         flags.append("abbr_dst_mismatch")
                 except Exception:
                     pass
+            if u in ("CST", "BST", "AST"):
+                flags.append("ambiguous_tz_abbr")      # read as the US/UK meaning; another region uses the same letters
             if u in ("Z", "UTC", "GMT", "UT", "ZULU"):
                 return utc, f"explicit {u}", flags
             return utc, f"explicit {u} ({_offset_label(dt.timedelta(minutes=mins))})", flags
@@ -450,6 +452,7 @@ TZ_HINTS = [
     (re.compile(r"\bArizona\b", re.I), "America/Phoenix"),
     (re.compile(r"\bMountain(?: Standard| Daylight)?(?: Time)\b|\bMST/MDT\b|\bMDT\b|\bMST\b", re.I), "America/Denver"),
     (re.compile(r"\bMoscow(?: Time)?\b|\bMSK\b|МСК|Москв", re.I), "Europe/Moscow"),
+    (re.compile(r"\bIST\b|\bIndia(?:n)? Standard Time\b", re.I), "Asia/Kolkata"),
     (re.compile(r"\b([A-Z][a-z]+/[A-Za-z_]+(?:/[A-Za-z_]+)?)\b"), "IANA"),
 ]
 HEADER_ONLY_HINTS = [
@@ -479,32 +482,67 @@ def tz_hints_in(text: str, header: bool = False) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+# a sentence that says what the times in the file ARE, e.g. "All times below are in UTC", "Timestamps are reported in PST"
+SCOPE_RE = re.compile(r"(?i)\b(?:all\s+)?(?:(?:event|network|activity|log|record|call|login)\s+)?(?:times?|timestamps?|records?|events?|dates?|data)\b"
+                      r"[^.\n]{0,60}?\b(?:are|is|were|in|shown|reported|expressed|recorded|displayed|given|listed)\b")
+# a line about when the REPORT was made, e.g. "Report Generated: 05/14/2026 08:42 EST" - says nothing about the data
+GENERATED_RE = re.compile(r"(?i)\b(?:generated|printed|exported|created|prepared|produced|run|compiled|report\s+date|date\s+of\s+report)\b")
+# abbreviations that mean different zones (or a fixed vs a daylight-saving offset) to different providers
+AMBIGUOUS_ABBR = {"CST": "US Central (UTC-6/-5) or China Standard Time (UTC+8)", "IST": "India (UTC+5:30), Irish or Israel Standard Time",
+                  "BST": "British Summer Time (UTC+1) or Bangladesh (UTC+6)", "AST": "Atlantic (UTC-4) or Arabia Standard Time (UTC+3)",
+                  "MST": "US Mountain with daylight saving (Denver) or year-round MST (Arizona, UTC-7)",
+                  "EST": "US Eastern with daylight saving or a fixed UTC-5", "PST": "US Pacific with daylight saving or a fixed UTC-8"}
+_ABBR_TOKEN = re.compile(r"\b(CST|IST|BST|AST|MST|EST|PST)\b")
+
+
 def suggest_source_tz(header_cells: list[tuple[str, str]], preamble: list[tuple[str, str]],
                       filename: str) -> dict:
-    """Decide the default timezone for a source and say exactly why.
+    """Decide the default timezone for a source and say exactly why. {tz, assumed, basis, conflicts}
 
-    header_cells / preamble: (citation, text). Returns {tz, assumed, basis, conflicts}."""
-    hits: list[tuple[str, str, str]] = []
+    Evidence is weighed in tiers, not first-come: (1) the header of the timestamp column itself; (2) a sentence that
+    says what the times in the file are ("All times below are in UTC"); (3) other preamble text, except lines about
+    when the report was generated; (4) the file name; (5) "Report generated ... EST" lines. The best tier with a hint
+    decides. The result is ASSUMED - shown as an assumption on every event and in the report's limits - when that
+    tier names two different zones, or when the hint is only an ambiguous abbreviation (CST, IST, EST ...)."""
+    tiers: list[list[tuple[str, str, str]]] = [[], [], [], [], []]
     for cite, txt in header_cells:
         for z in tz_hints_in(txt, header=True):
-            hits.append((z, cite, f"header '{txt.strip()[:60]}'"))
+            tiers[0].append((z, cite, f"header '{txt.strip()[:60]}'"))
     for cite, txt in preamble:
-        for z in tz_hints_in(txt):
-            hits.append((z, cite, f"text '{txt.strip()[:80]}'"))
+        zs = tz_hints_in(txt)
+        if not zs:
+            continue
+        if SCOPE_RE.search(txt) and not GENERATED_RE.search(txt):
+            k = 1
+        elif GENERATED_RE.search(txt):
+            k = 4
+        else:
+            k = 2
+        for z in zs:
+            tiers[k].append((z, cite, f"text '{txt.strip()[:80]}'"))
     for z in tz_hints_in(filename.replace("_", " ")):
-        hits.append((z, "file name", f"file name '{filename}'"))
-
-    if not hits:
+        tiers[3].append((z, "file name", f"file name '{filename}'"))
+    allhits = [h for t in tiers for h in t]
+    if not allhits:
         return {"tz": "UTC", "assumed": True,
                 "basis": "no timezone indicator found in header, preamble or file name; treated as UTC - VERIFY with the provider's cover letter",
                 "conflicts": []}
-    z, cite, why = hits[0]
+    best = next(t for t in tiers if t)
+    z, cite, why = best[0]
     note = f"{why} at {cite}" if cite != "file name" else why
-    if z in ("America/Los_Angeles", "America/New_York", "America/Chicago", "America/Denver") and \
-            re.search(r"\b(PST|EST|CST|MST)\b", why) and not re.search(r"(PDT|EDT|CDT|MDT|/)", why):
-        note += "; a standard-time abbreviation was read as the DST-observing zone - if the provider means a fixed offset year-round, set the source timezone to a fixed UTC offset"
-    return {"tz": z, "assumed": False, "basis": note,
-            "conflicts": [f"{h[0]} ({h[2]} at {h[1]})" for h in hits[1:] if h[0] != z]}
+    if best is tiers[4]:
+        note += " (a line about when the report was made - nothing in the file says what zone its times are in)"
+    assumed = False
+    same_tier = sorted({h[0] for h in best if h[0] != z})
+    if same_tier:
+        assumed = True
+        note += f"; the same kind of evidence also names {', '.join(same_tier)} - ASSUMED, VERIFY which applies to the times"
+    m = _ABBR_TOKEN.search(why)
+    if m and not re.search(r"(PDT|EDT|CDT|MDT|/|UTC|GMT|[+-]\d)", why.replace(m.group(1), "")):
+        assumed = True
+        note += f"; '{m.group(1)}' alone can mean {AMBIGUOUS_ABBR[m.group(1)]} - ASSUMED {z}, set the source timezone if the provider means otherwise"
+    return {"tz": z, "assumed": assumed, "basis": note,
+            "conflicts": [("report-time line: " if h in tiers[4] else "") + f"{h[0]} ({h[2]} at {h[1]})" for h in allhits if h[0] != z]}
 
 
 def looks_like_timestamp(v) -> bool:

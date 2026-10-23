@@ -14,11 +14,14 @@ FLAG_TEXT = {
     "abbr_dst_mismatch": "carry a time-zone abbreviation that does not match daylight-saving status on that date",
     "implausible_year": "have a year before 1995 or in the future (excluded from timing analysis)",
     "two_digit_year": "use two-digit years",
-    "date_only": "have a date but no time of day (excluded from hour-of-day analysis)",
+    "date_only": "have a date but no time of day (excluded from hour-of-day analysis and from anything measured in minutes: bursts, co-use, network switches, co-location)",
+    "tz_conflict": "come from a file whose header, preamble or name names more than one timezone; converted with the one stated in the basis - VERIFY against the provider's cover letter",
+    "ambiguous_tz_abbr": "carry a timezone abbreviation that means different zones to different providers (CST, BST, AST); read with the US/UK meaning",
+    "date_order_assumed": "have a numeric date whose day/month order the file never proves (both numbers 12 or less); read as MM/DD and EXCLUDED from all timing analysis - set the order for this source to use them",
     "paired_by_proximity": "were assembled by pairing an IP line with a nearby timestamp line",
 }
 FLAG_PRIORITY = {"ambiguous_dst": 1, "nonexistent_local_time": 1, "abbr_dst_mismatch": 1, "implausible_year": 2,
-                 "two_digit_year": 2, "date_only": 3, "paired_by_proximity": 1}
+                 "two_digit_year": 2, "date_only": 3, "date_order_assumed": 1, "tz_conflict": 1, "ambiguous_tz_abbr": 1, "paired_by_proximity": 1}
 
 
 class Quality(Analysis):

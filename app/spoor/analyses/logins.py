@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..findings import plural
 from ..util import fmt_int
-from .base import T, Analysis, human_delta, sq
+from .base import EXACT, T, Analysis, human_delta, sq
 
 LOGIN_CATS = "('login','login_failed','logout','account_change','registration')"
 
@@ -72,7 +72,7 @@ class Logins(Analysis):
         w = int(self.p.get("burst_window_min", 10)) * 60
         fu = int(self.p.get("burst_followup_min", 30)) * 60
         accts = [r["account"] for r in self.q("SELECT account FROM events WHERE category='login_failed' AND account IS NOT NULL "
-                                               "AND ts_epoch IS NOT NULL GROUP BY account HAVING COUNT(*) >= ?", (k,))]
+                                               f"AND {EXACT} GROUP BY account HAVING COUNT(*) >= ?", (k,))]
         from collections import deque
         found = []
         for acc in accts:
@@ -83,7 +83,7 @@ class Logins(Analysis):
                 if cl and cl["max_in_window"] >= k:
                     found.append((acc, cl))
             for r in self.con.execute("SELECT id, ts_epoch, ts_utc, ip FROM events WHERE account=? AND category='login_failed' "
-                                      "AND ts_epoch IS NOT NULL ORDER BY ts_epoch, id", (acc,)):
+                                      f"AND {EXACT} ORDER BY ts_epoch, id", (acc,)):
                 f = {"id": r[0], "ts_epoch": r[1], "ts_utc": r[2], "ip": r[3]}
                 if cluster is None or f["ts_epoch"] - cluster["last"]["ts_epoch"] > w:
                     close(cluster)

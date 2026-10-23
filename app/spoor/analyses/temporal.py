@@ -205,7 +205,7 @@ class Temporal(Analysis):
             prev = None
             for row in self.con.execute(
                     f"SELECT e.id, e.ts_epoch, e.ts_utc, e.ip, e.ip_ver, x.asn, x.as_org, x.country FROM events e "
-                    f"LEFT JOIN ip_enrich x ON x.ip=e.ip WHERE e.account=? AND e.ip_class IN {ATTR_SQL} AND {TIMED.replace('ts_', 'e.ts_')} "
+                    f"LEFT JOIN ip_enrich x ON x.ip=e.ip WHERE e.account=? AND e.ip_class IN {ATTR_SQL} AND {TIMED_HOURS.replace('ts_', 'e.ts_')} "
                     f"ORDER BY e.ts_epoch, e.id", (acc,)):
                 b = dict(zip(cols, row))
                 a = prev

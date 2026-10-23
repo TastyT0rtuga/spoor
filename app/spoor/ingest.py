@@ -273,6 +273,9 @@ class Ctx:
         return p
 
 
+_NUMDATE = re.compile(r"^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b")
+
+
 def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     f: dict = {}
     extra: dict = {}
@@ -357,6 +360,19 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
     tsv = f.get("ts")
     if tsv not in (None, ""):
         ts_raw = tsv.isoformat(sep=" ") if isinstance(tsv, (dt.datetime, dt.date)) else str(tsv)
+        do_assumed = False
+        m_do = _NUMDATE.match(ts_raw) if isinstance(tsv, str) else None
+        if m_do:     # day/month evidence over the WHOLE column (the scan only saw 200 rows)
+            a_do, b_do = int(m_do.group(1)), int(m_do.group(2))
+            evd = stats.setdefault("date_order_evidence", {}).setdefault(rec.table or "", [0, 0, None])
+            if a_do > 12 >= b_do:
+                evd[0] += 1
+                evd[2] = evd[2] or rec.loc
+            elif b_do > 12 >= a_do:
+                evd[1] += 1
+                evd[2] = evd[2] or rec.loc
+            elif ctx.tables.get(rec.table or "", {}).get("date_order_note") and a_do != b_do:
+                do_assumed = True
         r = ctx.parser(rec.table, column=is_table).parse(tsv)
         if r is None:
             stats["ts_failed"] += 1
@@ -369,6 +385,11 @@ def record_to_event(rec, ctx: Ctx, stats: dict) -> tuple[dict, list]:
                 local = r.utc.astimezone(ctx.tz.tz) if basis.startswith(("source tz", "ASSUMED")) else r.utc
                 ts_utc = local.strftime("%Y-%m-%d")
                 basis = basis + " (date only)"
+            if do_assumed:
+                flag = ",".join(x for x in [flag, "date_order_assumed"] if x)
+            if any(not c.startswith("report-time line") for c in (ctx.cfg.get("tz_conflicts") or [])) \
+                    and basis.startswith(("source tz", "ASSUMED")):
+                flag = ",".join(x for x in [flag, "tz_conflict"] if x)
             stats["ts_parsed"] += 1
             stats["basis"][basis] += 1
             for fl in (flag or "").split(","):
@@ -469,7 +490,7 @@ def new_stats() -> dict:
     return {"rows": 0, "ts_parsed": 0, "ts_failed": 0, "ts_missing": 0, "ip_invalid": 0,
             "ts_failed_examples": [], "ip_invalid_examples": [], "nontable": 0, "skipped_lines": 0,
             "empty_pages": [], "basis": collections.Counter(), "flags": collections.Counter(),
-            "categories": collections.Counter()}
+            "categories": collections.Counter(), "date_order_evidence": {}}
 
 
 def _stats_json(st: dict) -> str:
@@ -585,6 +606,31 @@ def ingest_source(case, con, src: dict, prog=None, log=None, on_fraction: Option
         last_ck = {"rev": rev, "ti": ti + 1, "seq": seq, "reader": None, "pass_seq0": seq}
         flush()
     stats["empty_pages"] = sorted(set(stats["empty_pages"]))
+    changed = []
+    for t in cfg.get("tables", []):
+        if not t.get("date_order_note"):
+            continue
+        first_gt, second_gt, where = (stats.get("date_order_evidence") or {}).get(t.get("name") or "", [0, 0, None])
+        if first_gt and not second_gt:
+            t["date_order"], t["date_order_note"] = "DMY", ""
+            t["date_order_proof"] = f"day-first proven by the whole column (first field over 12 at {src['label']}:{where}); the 200-row sample alone could not tell"
+            changed.append(t.get("name"))
+        elif second_gt and not first_gt:
+            t["date_order"], t["date_order_note"] = "MDY", ""
+            t["date_order_proof"] = f"month-first proven by the whole column (second field over 12 at {src['label']}:{where})"
+            changed.append(t.get("name"))
+        elif first_gt and second_gt:
+            t["date_order_note"] = "inconsistent day/month order in the column (both fields exceed 12 in different rows); read as MM/DD - VERIFY"
+    if changed and not src.get("_reread"):
+        new_rev = rev + 1
+        con.execute("UPDATE sources SET config=?, config_rev=?, checkpoint=NULL WHERE id=?", (json.dumps(cfg), new_rev, src["id"]))
+        con.commit()
+        if log:
+            log.info("%s: day/month order proven by the whole column (%s); reading the file again", src["label"], ", ".join(map(str, changed)))
+        case.audit(con, "date_order_proven", {"source": src["label"], "tables": changed})
+        again = dict(src, config=json.dumps(cfg), config_rev=new_rev, checkpoint=None, _reread=True)
+        return ingest_source(case, con, again, prog, log, on_fraction)
+    con.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), src["id"]))
     con.execute("UPDATE sources SET status='ingested', ingested_rev=?, ingested_at=?, rows=?, stats=?, checkpoint=NULL WHERE id=?",
                 (rev, utc_now_str(), seq, _stats_json(stats), src["id"]))
     con.commit()

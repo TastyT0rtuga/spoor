@@ -335,6 +335,7 @@ class Report:
                          + (f", delimiter `{t.get('delimiter')!r}`" if t.get("delimiter") else "")
                          + (f", date order {t.get('date_order')}" if t.get("date_order") else "")
                          + (f" ({t['date_order_note']})" if t.get("date_order_note") else "")
+                         + (f" ({t['date_order_proof']})" if t.get("date_order_proof") else "")
                          + (f", proximity pairing window {t.get('pair_window')} lines" if t.get("mode") == "text" and t.get("pair_window") else "")
                          + (f", default event type '{t['default_category']}' (basis: {t.get('default_category_basis')})" if t.get("default_category") else ""))
                 L.append("")

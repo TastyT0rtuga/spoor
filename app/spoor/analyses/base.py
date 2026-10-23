@@ -11,8 +11,12 @@ from ..provenance import Provenance
 
 ATTRIBUTABLE = ("public", "documentation")
 ATTR_SQL = "('public','documentation')"
-TIMED = "ts_epoch IS NOT NULL AND (ts_flag IS NULL OR (ts_flag NOT LIKE '%implausible_year%'))"
+# events whose instant is known: not an implausible year, and not a day/month order that the data could not prove
+TIMED = ("ts_epoch IS NOT NULL AND (ts_flag IS NULL OR (ts_flag NOT LIKE '%implausible_year%' "
+         "AND ts_flag NOT LIKE '%date_order_assumed%'))")
+# ... and a time of day (bursts, co-use, switches, anything measured in minutes)
 TIMED_HOURS = TIMED + " AND (ts_flag IS NULL OR ts_flag NOT LIKE '%date_only%')"
+EXACT = TIMED_HOURS
 
 
 class Analysis:
@@ -96,7 +100,7 @@ def closest_couse(con, ip: str, accounts: Optional[set] = None):
     Streams the rows, so IPs with millions of records cost no memory.
     Returns (seconds, event_id_a, account_a, ts_a, event_id_b, account_b, ts_b, activity) or None."""
     acts = ",".join(f"'{c}'" for c in ACTIVITY_CATS)
-    base = ("SELECT id, account, ts_epoch, ts_utc FROM events WHERE ip=? AND account IS NOT NULL AND ts_epoch IS NOT NULL "
+    base = ("SELECT id, account, ts_epoch, ts_utc FROM events WHERE ip=? AND account IS NOT NULL AND " + EXACT + " "
             "AND (ts_flag IS NULL OR ts_flag NOT LIKE '%date_only%')")
     for activity, extra in ((True, f" AND category IN ({acts})"), (False, "")):
         best = None

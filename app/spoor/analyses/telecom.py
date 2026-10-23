@@ -359,6 +359,7 @@ class Telecom(Analysis):
         rows = self.con.execute(
             "SELECT t.event_id, t.target, t.ts_epoch, t.ts_utc, t.lat, t.lon, t.cell, t.azimuth, t.site_name, s.path "
             "FROM tcore t JOIN sources s ON s.id = t.source_id WHERE t.target IS NOT NULL AND t.ts_epoch IS NOT NULL "
+            "AND t.event_id NOT IN (SELECT id FROM events WHERE ts_flag LIKE '%date_order_assumed%') "
             "AND length(t.ts_utc) > 10 AND (t.lat IS NOT NULL OR t.cell IS NOT NULL) ORDER BY t.ts_epoch, t.event_id")
         recent = collections.deque()
         # occasions are built as matches arrive (in time order), so two phones that are together for weeks
