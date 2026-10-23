@@ -95,6 +95,8 @@ def _record_from(lines: list[_Line], table=None, note="") -> Rec:
 
 
 _KEY_INLINE = re.compile(r"^\s*([A-Za-z][A-Za-z _/().'-]{0,40}?)\s*[:=]\s*\S")
+KEY_INLINE = _KEY_INLINE
+_KEY_EMPTY = re.compile(r"^\s*([A-Za-z][A-Za-z _/().'-]{0,40}?)\s*[:=]\s*$")
 
 
 def _label_like(ln: "_Line") -> bool:
@@ -120,12 +122,19 @@ class TextModeExtractor:
         self._prev: Optional[_Line] = None
 
     def feed(self, loc, line, offset, length, text) -> Iterator[Rec]:
+        m = _KEY_INLINE.match(text) if text else None
+        # "Time:" with nothing after it, followed by another "Key: value" line or a blank line, is an EMPTY FIELD of the
+        # record (not a label for the next line): it still marks where the record starts (review #3 c03)
+        pv = self._prev
+        if pv is not None and getattr(pv, "key", None) is None and (m or not (text or "").strip()):
+            e = _KEY_EMPTY.match(pv.text)
+            if e:
+                pv.key = e.group(1).strip().lower()
         if not text or not text.strip():
             if self._prev is not None:
                 self._prev.blank_after = True
             return
         ln = analyse_line(loc, line, offset, length, text)
-        m = _KEY_INLINE.match(text)
         if m and (ln.ts or ln.ips or any(ch.isdigit() for ch in text)):
             ln.key = m.group(1).strip().lower()
         elif (ln.ts or ln.ips) and self._prev is not None and _label_like(self._prev) and not getattr(self._prev, "blank_after", False):

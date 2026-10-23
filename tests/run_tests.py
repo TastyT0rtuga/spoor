@@ -766,6 +766,10 @@ def review_regressions():
     _c, con = case("f04")
     got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
     ok(got.get("192.0.2.5") is None and got.get("192.0.2.9") == "2024-01-01 11:00:00", "an IP whose record has no time stays unpaired; the next record is not shifted")
+    _c, con = case("c03")       # review #3: small key/value file, one record with an empty 'Time:' field
+    got = {e["ip"]: e["ts_utc"] for e in evs(con) if e["ip"]}
+    ok(got == {"203.0.113.10": "2024-05-01 10:00:00", "198.51.100.20": None},
+       f"key/value records: IP keeps its own record's time; an empty 'Time:' field starts a record and its IP stays unpaired ({got})")
     from spoor.readers.textmode import TextModeExtractor
     ex = TextModeExtractor(window=6)
     lines = ["Time: 2024-01-01 10:00:00 UTC", "IP Address: 192.0.2.1", "Time: 2024-01-01 11:00:00 UTC"]

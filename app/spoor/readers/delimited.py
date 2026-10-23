@@ -286,18 +286,21 @@ def scan(path, name: str) -> dict:
                             + (f", {pre_end} preamble line(s)" if pre_end else ""))
     else:
         out["preamble"] = [(f"L{i + 1}", l.strip()) for i, l in enumerate(lines[:30]) if l.strip()]
-        ip_only = ts_only = both = 0
-        from .textmode import analyse_line
+        ip_only = ts_only = both = kv_ip = kv_ts = 0
+        from .textmode import KEY_INLINE, analyse_line
         for i, l in enumerate(lines[:400]):
             a = analyse_line("", i, None, None, l)
             if a.ips and a.ts:
                 both += 1
             elif a.ips:
                 ip_only += 1
+                kv_ip += bool(KEY_INLINE.match(l))
             elif a.ts:
                 ts_only += 1
+                kv_ts += bool(KEY_INLINE.match(l))
         pair = ip_only >= 3 and ts_only >= 3 and both < ip_only
-        out["tables"].append({"name": "text", "mode": "text", "pair_window": 6 if pair else 0,
+        kv_pair = kv_ip >= 1 and kv_ts >= 1      # 'Time: ...' / 'IP Address: ...' records: pair inside each record
+        out["tables"].append({"name": "text", "mode": "text", "pair_window": 6 if pair else (1 if kv_pair else 0),
                               "samples": [[l.rstrip()] for l in lines[:20]], "headers": ["line"]})
         out["notes"].append("free text: lines with timestamps, IPs or identifiers become records"
                             + ("; IP and timestamp appear on separate lines - proximity pairing suggested" if pair else ""))
